@@ -9,21 +9,21 @@ class Configuration(BaseModel):
     """The configuration for the agent."""
 
     query_generator_model: str = Field(
-        default="gemini-2.0-flash",
+        default="kimi-k3",
         metadata={
             "description": "The name of the language model to use for the agent's query generation."
         },
     )
 
     reflection_model: str = Field(
-        default="gemini-2.5-flash",
+        default="kimi-k3",
         metadata={
             "description": "The name of the language model to use for the agent's reflection."
         },
     )
 
     answer_model: str = Field(
-        default="gemini-2.5-pro",
+        default="kimi-k3",
         metadata={
             "description": "The name of the language model to use for the agent's answer."
         },
@@ -37,6 +37,26 @@ class Configuration(BaseModel):
     max_research_loops: int = Field(
         default=2,
         metadata={"description": "The maximum number of research loops to perform."},
+    )
+
+    rag_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable RAG retrieval from the knowledge base."},
+    )
+
+    rag_top_k: int = Field(
+        default=5,
+        metadata={"description": "The number of top documents to retrieve from the knowledge base."},
+    )
+
+    docs_dir: str = Field(
+        default="data/docs",
+        metadata={"description": "Directory containing documents to index for RAG."},
+    )
+
+    chroma_persist_dir: str = Field(
+        default="data/chroma",
+        metadata={"description": "Directory to persist the Chroma vector store."},
     )
 
     @classmethod

@@ -34,17 +34,20 @@ Topic: What revenue grew more last year apple stock or the number of people buyi
 Context: {research_topic}"""
 
 
-web_searcher_instructions = """Conduct targeted Google Searches to gather the most recent, credible information on "{research_topic}" and synthesize it into a verifiable text artifact.
+web_searcher_instructions = """You are given web search results about "{research_topic}". Synthesize them into a coherent, well-written summary.
 
 Instructions:
-- Query should ensure that the most current information is gathered. The current date is {current_date}.
-- Conduct multiple, diverse searches to gather comprehensive information.
-- Consolidate key findings while meticulously tracking the source(s) for each specific piece of information.
-- The output should be a well-written summary or report based on your search findings. 
-- Only include the information found in the search results, don't make up any information.
+- The current date is {current_date}.
+- Only include information found in the provided search results. Do not make up any information.
+- Consolidate key findings while tracking the sources.
+- Include source citations using markdown format with the URLs provided in the search results.
+- The output should be a well-written summary or report.
 
 Research Topic:
 {research_topic}
+
+Search Results:
+{search_results}
 """
 
 reflection_instructions = """You are an expert research assistant analyzing summaries about "{research_topic}".
@@ -79,18 +82,59 @@ Summaries:
 {summaries}
 """
 
-answer_instructions = """Generate a high-quality answer to the user's question based on the provided summaries.
+
+rag_reflection_instructions = """You are an expert research assistant analyzing summaries about "{research_topic}".
+
+Instructions:
+- Identify knowledge gaps or areas that need deeper exploration and generate a follow-up query. (1 or multiple).
+- If provided summaries and knowledge base documents are sufficient to answer the user's question, don't generate a follow-up query.
+- If there is a knowledge gap, generate a follow-up query that would help expand your understanding.
+- Focus on technical details, implementation specifics, or emerging trends that weren't fully covered.
+- Consider both the Web Research Summaries and the Knowledge Base Documents when evaluating sufficiency.
+
+Requirements:
+- Ensure the follow-up query is self-contained and includes necessary context for web search.
+
+Output Format:
+- Format your response as a JSON object with these exact keys:
+   - "is_sufficient": true or false
+   - "knowledge_gap": Describe what information is missing or needs clarification
+   - "follow_up_queries": Write a specific question to address this gap
+
+Example:
+```json
+{{
+    "is_sufficient": true, // or false
+    "knowledge_gap": "The summary lacks information about performance metrics and benchmarks", // "" if is_sufficient is true
+    "follow_up_queries": ["What are typical performance benchmarks and metrics used to evaluate [specific technology]?"] // [] if is_sufficient is true
+}}
+```
+
+Reflect carefully on the Web Research Summaries and Knowledge Base Documents to identify knowledge gaps and produce a follow-up query. Then, produce your output following this JSON format:
+
+Web Research Summaries:
+{summaries}
+
+Knowledge Base Documents:
+{rag_documents}
+"""
+
+answer_instructions = """Generate a high-quality answer to the user's question based on the provided summaries and knowledge base documents.
 
 Instructions:
 - The current date is {current_date}.
-- You are the final step of a multi-step research process, don't mention that you are the final step. 
+- You are the final step of a multi-step research process, don't mention that you are the final step.
 - You have access to all the information gathered from the previous steps.
 - You have access to the user's question.
-- Generate a high-quality answer to the user's question based on the provided summaries and the user's question.
-- Include the sources you used from the Summaries in the answer correctly, use markdown format (e.g. [apnews](https://vertexaisearch.cloud.google.com/id/1-0)). THIS IS A MUST.
+- Generate a high-quality answer to the user's question based on the provided web research summaries, knowledge base documents, and the user's question.
+- For web search sources, include citations in markdown format (e.g. [apnews](https://vertexaisearch.cloud.google.com/id/1-0)). THIS IS A MUST.
+- For knowledge base documents, cite them using the source file name, e.g. [source: mydoc.pdf].
 
 User Context:
 - {research_topic}
 
-Summaries:
-{summaries}"""
+Web Research Summaries:
+{summaries}
+
+Knowledge Base Documents:
+{rag_documents}"""

@@ -75,6 +75,52 @@ def insert_citation_markers(text, citations_list):
     return modified_text
 
 
+def format_rag_documents(docs: List[Any]) -> str:
+    """Format RAG retrieved documents into a prompt-friendly string.
+
+    Args:
+        docs: A list of Document-like objects with page_content and metadata.
+
+    Returns:
+        A formatted string with each document's content and source.
+    """
+    if not docs:
+        return "No relevant documents found in the knowledge base."
+
+    formatted = []
+    for i, doc in enumerate(docs, 1):
+        source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+        page = doc.metadata.get("page", "") if hasattr(doc, "metadata") else ""
+        page_info = f" (page {page})" if page else ""
+        content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+        formatted.append(f"[{i}] Source: {source}{page_info}\n{content}\n")
+
+    return "\n---\n\n".join(formatted)
+
+
+def format_search_results(results: List[Any], search_id: int) -> str:
+    """Format DuckDuckGo search results into a prompt-friendly string.
+
+    Args:
+        results: List of DuckDuckGo result dictionaries.
+        search_id: An identifier for this search batch.
+
+    Returns:
+        A formatted string with titles, snippets, and URLs.
+    """
+    if not results:
+        return "No web search results found."
+
+    formatted = []
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "Untitled")
+        body = r.get("body", "")
+        href = r.get("href", "")
+        formatted.append(f"[{i}] {title}\n{body}\nSource: {href}\n")
+
+    return "\n---\n\n".join(formatted)
+
+
 def get_citations(response, resolved_urls_map):
     """
     Extracts and formats citation information from a Gemini model's response.

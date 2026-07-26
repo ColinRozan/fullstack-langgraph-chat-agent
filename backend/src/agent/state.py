@@ -15,6 +15,7 @@ class OverallState(TypedDict):
     search_query: Annotated[list, operator.add]
     web_research_result: Annotated[list, operator.add]
     sources_gathered: Annotated[list, operator.add]
+    rag_documents: Annotated[list, operator.add]
     initial_search_query_count: int
     max_research_loops: int
     research_loop_count: int
@@ -36,10 +37,16 @@ class Query(TypedDict):
 
 class QueryGenerationState(TypedDict):
     search_query: list[Query]
+    research_topic: str
 
 
 class WebSearchState(TypedDict):
     search_query: str
+    id: str
+
+
+class RagRetrieveState(TypedDict):
+    query: str
     id: str
 
 

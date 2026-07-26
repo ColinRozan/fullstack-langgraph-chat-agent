@@ -5,7 +5,7 @@ frontend/.vite/
 frontend/coverage/
 .DS_Store
 *.local
-
+backend/data/docs/
 # Logs
 logs
 *.log
