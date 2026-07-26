@@ -329,8 +329,8 @@ export default function App() {
       ];
       setThreads(next);
       saveThreads(next);
-      setActiveThreadId(id);
-      saveActiveThreadId(id);
+      // Note: do NOT update activeThreadId here — changing the key would
+      // remount ChatSession and interrupt the in-flight stream.
     },
     [threads]
   );
