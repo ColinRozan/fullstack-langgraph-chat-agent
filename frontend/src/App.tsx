@@ -51,11 +51,12 @@ function generateTitle(messages: Message[]): string {
 
 interface ChatSessionProps {
   threadId: string | null;
+  threadTitle?: string;
   onThreadCreated: (id: string, title: string) => void;
   onThreadUpdated: (id: string, title: string) => void;
 }
 
-function ChatSession({ threadId, onThreadCreated, onThreadUpdated }: ChatSessionProps) {
+function ChatSession({ threadId, threadTitle, onThreadCreated, onThreadUpdated }: ChatSessionProps) {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
   >([]);
@@ -279,6 +280,7 @@ function ChatSession({ threadId, onThreadCreated, onThreadUpdated }: ChatSession
             liveActivityEvents={processedEventsTimeline}
             historicalActivities={historicalActivities}
             messageSources={messageSources}
+            threadTitle={threadTitle}
           />
         )}
       </div>
@@ -367,6 +369,7 @@ export default function App() {
         <ChatSession
           key={activeThreadId ?? "__new__"}
           threadId={activeThreadId}
+          threadTitle={threads.find((t) => t.id === activeThreadId)?.title}
           onThreadCreated={handleThreadCreated}
           onThreadUpdated={handleThreadUpdated}
         />

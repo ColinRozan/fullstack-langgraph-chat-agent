@@ -1,13 +1,14 @@
 import type React from "react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Copy, CopyCheck } from "lucide-react";
+import { Loader2, Copy, CopyCheck, FileDown, FileText } from "lucide-react";
 import { InputForm } from "@/components/InputForm";
 import { Button } from "@/components/ui/button";
-import { useState, ReactNode } from "react";
+import { useState, useRef, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { exportAsMarkdown, exportAsPDF } from "@/lib/export";
 import { Badge } from "@/components/ui/badge";
 import {
   ActivityTimeline,
@@ -170,6 +171,7 @@ interface AiMessageBubbleProps {
   handleCopy: (text: string, messageId: string) => void;
   copiedMessageId: string | null;
   sources?: { rag_sources: any[]; web_sources: any[] };
+  threadTitle?: string;
 }
 
 // AiMessageBubble Component
@@ -183,14 +185,44 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   handleCopy,
   copiedMessageId,
   sources,
+  threadTitle,
 }) => {
   // Determine which activity events to show and if it's for a live loading message
   const activityForThisBubble =
     isLastMessage && isOverallLoading ? liveActivity : historicalActivity;
   const isLiveActivityForThisBubble = isLastMessage && isOverallLoading;
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const textContent =
+    typeof message.content === "string"
+      ? message.content
+      : JSON.stringify(message.content);
+
+  const handleExportMarkdown = () => {
+    const filename = threadTitle
+      ? `${threadTitle.slice(0, 30)}.md`
+      : undefined;
+    exportAsMarkdown(textContent, filename);
+  };
+
+  const handleExportPDF = async () => {
+    if (!contentRef.current) return;
+    setIsExporting(true);
+    try {
+      const filename = threadTitle
+        ? `${threadTitle.slice(0, 30)}.pdf`
+        : undefined;
+      await exportAsPDF(contentRef.current, filename);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const showExport = textContent.length > 0 && !isOverallLoading;
 
   return (
-    <div className={`relative break-words flex flex-col`}>
+    <div className={`relative break-words flex flex-col`} ref={contentRef}>
       {activityForThisBubble && activityForThisBubble.length > 0 && (
         <div className="mb-3 border-b border-neutral-700 pb-3 text-xs">
           <ActivityTimeline
@@ -257,23 +289,55 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
         </div>
       )}
 
-      <Button
-        variant="default"
-        className={`cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 self-end mt-2 ${
-          message.content.length > 0 ? "visible" : "hidden"
-        }`}
-        onClick={() =>
-          handleCopy(
-            typeof message.content === "string"
-              ? message.content
-              : JSON.stringify(message.content),
-            message.id!
-          )
-        }
-      >
-        {copiedMessageId === message.id ? "Copied" : "Copy"}
-        {copiedMessageId === message.id ? <CopyCheck /> : <Copy />}
-      </Button>
+      <div className="flex items-center gap-2 self-end mt-2">
+        {showExport && (
+          <>
+            <Button
+              variant="default"
+              size="sm"
+              className="cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 hover:bg-neutral-600"
+              onClick={handleExportMarkdown}
+              title="Export as Markdown"
+            >
+              <FileText className="h-4 w-4 mr-1" />
+              MD
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              className="cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 hover:bg-neutral-600"
+              onClick={handleExportPDF}
+              disabled={isExporting}
+              title="Export as PDF"
+            >
+              <FileDown className="h-4 w-4 mr-1" />
+              {isExporting ? "Exporting..." : "PDF"}
+            </Button>
+          </>
+        )}
+        <Button
+          variant="default"
+          size="sm"
+          className={`cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 hover:bg-neutral-600 ${
+            message.content.length > 0 ? "visible" : "hidden"
+          }`}
+          onClick={() =>
+            handleCopy(
+              typeof message.content === "string"
+                ? message.content
+                : JSON.stringify(message.content),
+              message.id!
+            )
+          }
+        >
+          {copiedMessageId === message.id ? "Copied" : "Copy"}
+          {copiedMessageId === message.id ? (
+            <CopyCheck className="h-4 w-4 ml-1" />
+          ) : (
+            <Copy className="h-4 w-4 ml-1" />
+          )}
+        </Button>
+      </div>
     </div>
   );
 };
@@ -287,6 +351,7 @@ interface ChatMessagesViewProps {
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
   messageSources?: Record<string, { rag_sources: any[]; web_sources: any[] }>;
+  threadTitle?: string;
 }
 
 export function ChatMessagesView({
@@ -298,6 +363,7 @@ export function ChatMessagesView({
   liveActivityEvents,
   historicalActivities,
   messageSources,
+  threadTitle,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -339,6 +405,7 @@ export function ChatMessagesView({
                       handleCopy={handleCopy}
                       copiedMessageId={copiedMessageId}
                       sources={messageSources?.[message.id!]}
+                      threadTitle={threadTitle}
                     />
                   )}
                 </div>
