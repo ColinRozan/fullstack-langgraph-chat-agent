@@ -1,6 +1,6 @@
 # Fullstack LangGraph Quickstart
 
-A fullstack research assistant powered by **LangGraph**, **Google Gemini**, and a modern **React** frontend. The agent performs comprehensive research on your queries by dynamically generating search terms, querying the web via DuckDuckGo (with SearXNG fallback), retrieving documents from a local knowledge base, reflecting on results to identify knowledge gaps, and iteratively refining its search until it delivers a well-supported answer with inline citations.
+A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a modern **React** frontend. The agent performs comprehensive research on your queries by dynamically generating search terms, querying the web via DuckDuckGo (with SearXNG fallback), retrieving documents from a local knowledge base, reflecting on results to identify knowledge gaps, and iteratively refining its search until it delivers a well-supported answer with inline citations.
 
 <img src="./app.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
 
@@ -8,13 +8,14 @@ A fullstack research assistant powered by **LangGraph**, **Google Gemini**, and 
 
 - 💬 **Conversational Research UI** — Modern React chat interface with real-time streaming.
 - 🧠 **LangGraph Agent** — Stateful agent workflow with query generation, parallel web research, RAG retrieval, reflection, and answer synthesis.
+- 🗂️ **Multi-Thread Memory** — Sidebar shows all historical conversations. Each conversation is an independent thread with full state persistence; switch threads without losing context.
 - 🔍 **Dynamic Query Generation** — LLM generates diverse, targeted search queries from your question.
 - 🌐 **Multi-Backend Web Search** — DuckDuckGo primary search with automatic SearXNG fallback.
 - 📚 **RAG Knowledge Base** — Local document retrieval powered by Chroma vector store; supports PDF, TXT, and Markdown.
 - 🤔 **Reflective Reasoning** — Analyzes gathered information to identify gaps and decides whether to continue researching.
 - 📄 **Inline Citations** — Distinguishes web sources `[🌐 Title](URL)` from knowledge base sources `[📄 source: filename.pdf]`.
 - 🎯 **Research Depth Control** — Choose between Low, Medium, and High effort modes to adjust query count and max reflection loops.
-- 🔄 **Model Selection** — Switch between available LLM models (e.g., Ark Code, Kimi K3) for different agent stages.
+- 🔄 **Model Selection** — Switch between available LLM models for different agent stages.
 - 🎨 **Modern Dark UI** — Tailwind CSS + Shadcn UI with collapsible activity timeline showing each research step live.
 - 🐳 **Docker Ready** — Multi-stage Dockerfile and `docker-compose.yml` for production deployment with Redis and PostgreSQL.
 
@@ -24,12 +25,13 @@ A fullstack research assistant powered by **LangGraph**, **Google Gemini**, and 
 .
 ├── frontend/                     # React + Vite frontend application
 │   ├── src/
-│   │   ├── App.tsx              # Main app component with LangGraph SDK streaming
+│   │   ├── App.tsx              # Main app: thread manager + chat session
 │   │   ├── components/
 │   │   │   ├── ChatMessagesView.tsx   # Chat history, markdown rendering, sources
 │   │   │   ├── InputForm.tsx          # Text input with effort/model selectors
 │   │   │   ├── WelcomeScreen.tsx      # Landing page
 │   │   │   ├── ActivityTimeline.tsx   # Real-time research step timeline
+│   │   │   ├── Sidebar.tsx            # Thread history sidebar (new/delete/switch)
 │   │   │   └── ui/                    # Shadcn UI primitives
 │   │   ├── main.tsx
 │   │   └── global.css
@@ -100,6 +102,13 @@ cd backend
 pip install -e .
 ```
 
+> **Note:** `langgraph dev` requires Python 3.11+. If your system default is lower, create a conda environment first:
+> ```bash
+> conda create -n langgraph_env python=3.11 -y
+> conda activate langgraph_env
+> pip install -e .
+> ```
+
 **Frontend:**
 
 ```bash
@@ -138,17 +147,19 @@ cd frontend && npm run dev
 
 | Component | Description |
 |-----------|-------------|
-| `App.tsx` | Orchestrates `useStream` from `@langchain/langgraph-sdk/react`, manages timeline state, message sources, and error handling. |
+| `App.tsx` | Thread manager: loads/saves thread list via localStorage, mounts `ChatSession` with `key={threadId}` for clean switching. |
+| `Sidebar.tsx` | Collapsible left sidebar showing all historical threads. Supports select, delete, and new-chat actions. |
 | `WelcomeScreen.tsx` | Clean landing page with search input. |
-| `InputForm.tsx` | Textarea with Ctrl/Cmd+Enter submit, effort selector (Low/Medium/High), and model selector (Ark Code / Kimi K3). |
-| `ChatMessagesView.tsx` | Renders conversation history with ReactMarkdown, copy-to-clipboard, and source citation panels. |
+| `InputForm.tsx` | Textarea with Ctrl/Cmd+Enter submit, effort selector (Low/Medium/High), and model selector. |
+| `ChatMessagesView.tsx` | Renders conversation history with ReactMarkdown (GFM tables supported), copy-to-clipboard, and source citation panels. |
 | `ActivityTimeline.tsx` | Collapsible real-time timeline showing research steps with contextual icons. |
 
 **Key frontend features:**
+- **Multi-thread sidebar** — Each conversation is an independent thread persisted in `localStorage`. Switch freely without losing context.
 - Real-time streaming via `@langchain/langgraph-sdk/react` `useStream` hook
 - Automatic scroll-to-bottom on new messages
 - Source panels per message: **知识库来源** (knowledge base) and **网络来源** (web sources)
-- Markdown rendering with syntax-highlighted code blocks, tables, and blockquotes
+- Markdown rendering with syntax-highlighted code blocks, **tables**, and blockquotes
 - Graceful error display with retry button
 
 ### Backend (LangGraph + FastAPI)
@@ -174,6 +185,22 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 5. **Reflection:** Analyzes both web research and knowledge base results. If gaps exist, generates follow-up queries.
 6. **Iterative Refinement:** Repeats web research and reflection with follow-up queries (up to the configured max loops).
 7. **Finalize:** Combines all sources into a final answer with inline citations and source distinction.
+
+### Memory & Thread Management
+
+The frontend maintains a **thread list** in `localStorage`:
+
+```
+lg-threads      → [{ id, title, createdAt, updatedAt }, ...]
+lg-active-thread → "<current-thread-id>"
+```
+
+- Each thread maps to a LangGraph `thread_id` on the backend.
+- `langgraph dev` (in-memory runtime) automatically persists thread state per `thread_id`.
+- Clicking **New Chat** creates a fresh thread; clicking a sidebar item restores that thread's full conversation history.
+- Deleting a thread removes it from the sidebar list only; the backend in-memory state survives until restart.
+
+> **Production Note:** When deployed via Docker Compose with PostgreSQL, thread state persists across backend restarts.
 
 ### LLM Provider Logic
 
@@ -223,9 +250,9 @@ Agent behavior can be customized via environment variables or runtime config:
 | `ANTHROPIC_BASE_URL` | — | Base URL for Anthropic-compatible API |
 | `OPENAI_API_KEY` | — | API key for OpenAI-compatible provider |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
-| `query_generator_model` | `kimi-k3` | Model for search query generation |
-| `reflection_model` | `kimi-k3` | Model for reflection and gap analysis |
-| `answer_model` | `kimi-k3` | Model for final answer synthesis |
+| `query_generator_model` | `ark-code-latest` | Model for search query generation |
+| `reflection_model` | `ark-code-latest` | Model for reflection and gap analysis |
+| `answer_model` | `ark-code-latest` | Model for final answer synthesis |
 | `number_of_initial_queries` | `3` | Number of initial search queries to generate |
 | `max_research_loops` | `2` | Maximum research reflection loops |
 | `rag_enabled` | `true` | Enable/disable RAG knowledge base retrieval |
@@ -294,7 +321,7 @@ GEMINI_API_KEY=<your_key> LANGSMITH_API_KEY=<your_key> docker-compose up
 - [Shadcn UI](https://ui.shadcn.com/) — Re-usable component primitives (Radix UI)
 - [Lucide React](https://lucide.dev/) — Icons
 - [@langchain/langgraph-sdk](https://github.com/langchain-ai/langgraph) — SDK for streaming LangGraph agent events
-- [React Markdown](https://github.com/remarkjs/react-markdown) — Markdown rendering
+- [React Markdown](https://github.com/remarkjs/react-markdown) + [remark-gfm](https://github.com/remarkjs/remark-gfm) — Markdown rendering with GFM tables
 
 ### Backend
 - [LangGraph](https://github.com/langchain-ai/langgraph) — Framework for building stateful agent workflows
