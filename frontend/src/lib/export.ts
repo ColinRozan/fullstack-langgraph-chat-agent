@@ -36,7 +36,8 @@ export function exportAsText(content: string, filename?: string) {
 
 /**
  * Export a DOM element as PDF using html-to-image + jsPDF.
- * Renders in a light-theme clone so the PDF is white-background / dark-text.
+ * Renders inside an off-screen iframe with light-theme overrides
+ * so the PDF is white-background / dark-text.
  */
 export async function exportAsPDF(
   element: HTMLElement,
@@ -45,33 +46,60 @@ export async function exportAsPDF(
   const safeName = filename || `answer-${Date.now()}.pdf`;
   const finalName = safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`;
 
-  // Clone the element into an on-screen but invisible wrapper
-  // so html-to-image can measure and render it correctly.
-  const clone = element.cloneNode(true) as HTMLElement;
-  const wrapper = document.createElement("div");
-  wrapper.style.background = "#ffffff";
-  wrapper.style.color = "#171717";
-  wrapper.style.padding = "24px";
-  wrapper.style.position = "absolute";
-  wrapper.style.top = "0";
-  wrapper.style.left = "0";
-  wrapper.style.opacity = "0";
-  wrapper.style.pointerEvents = "none";
-  wrapper.style.zIndex = "-1";
-  wrapper.style.width = `${element.scrollWidth}px`;
-  wrapper.appendChild(clone);
-  document.body.appendChild(wrapper);
+  // Collect all CSS rules from the current page
+  let allCss = "";
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      allCss +=
+        Array.from(sheet.cssRules)
+          .map((r) => r.cssText)
+          .join("\n") + "\n";
+    } catch {
+      // Cross-origin stylesheet — skip
+    }
+  }
 
-  // Force light-theme colours on the clone itself
-  clone.style.backgroundColor = "#ffffff";
-  clone.style.color = "#171717";
+  // Build an off-screen iframe with light-theme overrides
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText =
+    "position:fixed;top:0;left:0;width:100%;height:100%;opacity:0;pointer-events:none;z-index:-1;border:none;";
+  document.body.appendChild(iframe);
 
-  // Allow the browser to finish layout before capturing
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const doc = iframe.contentDocument!;
+  doc.open();
+  doc.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          ${allCss}
+          body {
+            background: #ffffff !important;
+            color: #171717 !important;
+            padding: 24px;
+            font-family: system-ui, -apple-system, sans-serif;
+            line-height: 1.6;
+          }
+          * { color: #171717 !important; }
+          a { color: #2563eb !important; text-decoration: underline !important; }
+          pre, code { background-color: #f5f5f5 !important; color: #171717 !important; }
+          blockquote { border-left-color: #d4d4d4 !important; }
+        </style>
+      </head>
+      <body>${element.outerHTML}</body>
+    </html>
+  `);
+  doc.close();
+
+  // Allow browser to render
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 100));
+  });
 
   let imgData: string;
   try {
-    imgData = await htmlToImage.toPng(wrapper, {
+    imgData = await htmlToImage.toPng(doc.body, {
       pixelRatio: 1.5,
       backgroundColor: "#ffffff",
     });
@@ -80,7 +108,7 @@ export async function exportAsPDF(
       `Image capture failed: ${e instanceof Error ? e.message : String(e)}`
     );
   } finally {
-    document.body.removeChild(wrapper);
+    document.body.removeChild(iframe);
   }
 
   // A4 page dimensions in mm
@@ -89,7 +117,6 @@ export async function exportAsPDF(
   const margin = 10;
   const usableWidth = pageWidth - margin * 2;
 
-  // Get image dimensions from the data URL
   const img = new Image();
   img.src = imgData;
   await new Promise<void>((resolve, reject) => {
@@ -108,11 +135,9 @@ export async function exportAsPDF(
   let heightLeft = scaledHeight;
   let position = 0;
 
-  // First page
   pdf.addImage(imgData, "PNG", margin, margin, scaledWidth, scaledHeight);
   heightLeft -= pageHeight - margin * 2;
 
-  // Additional pages if content overflows
   while (heightLeft > 0) {
     position = heightLeft - scaledHeight + margin;
     pdf.addPage();
