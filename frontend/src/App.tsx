@@ -47,6 +47,12 @@ export default function App() {
             exampleLabels || "N/A"
           }.`,
         };
+      } else if (event.rag_retrieve) {
+        const docs = event.rag_retrieve.rag_documents || [];
+        processedEvent = {
+          title: "RAG Retrieve",
+          data: `Retrieved ${docs.length} documents from knowledge base.`,
+        };
       } else if (event.reflection) {
         processedEvent = {
           title: "Reflection",
