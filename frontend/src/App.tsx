@@ -5,6 +5,21 @@ import { ProcessedEvent } from "@/components/ActivityTimeline";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
 import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+
+const STORAGE_KEY = "lg-thread-id";
+
+function getStoredThreadId(): string | null {
+  return localStorage.getItem(STORAGE_KEY);
+}
+
+function setStoredThreadId(id: string) {
+  localStorage.setItem(STORAGE_KEY, id);
+}
+
+function clearStoredThreadId() {
+  localStorage.removeItem(STORAGE_KEY);
+}
 
 export default function App() {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
@@ -30,6 +45,8 @@ export default function App() {
       ? "http://localhost:2024"
       : "http://localhost:8123",
     assistantId: "agent",
+    threadId: getStoredThreadId(),
+    onThreadId: (id) => setStoredThreadId(id),
     messagesKey: "messages",
     onUpdateEvent: (event: any) => {
       let processedEvent: ProcessedEvent | null = null;
@@ -173,9 +190,25 @@ export default function App() {
     window.location.reload();
   }, [thread]);
 
+  const handleNewChat = useCallback(() => {
+    clearStoredThreadId();
+    window.location.reload();
+  }, []);
+
   return (
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
-      <main className="h-full w-full max-w-4xl mx-auto">
+      <main className="h-full w-full max-w-4xl mx-auto relative">
+        <div className="absolute top-4 left-4 z-10">
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-neutral-700 border-neutral-600 text-neutral-200 hover:bg-neutral-600 hover:text-white"
+            onClick={handleNewChat}
+          >
+            <Plus className="h-4 w-4 mr-1" />
+            New Chat
+          </Button>
+        </div>
           {thread.messages.length === 0 ? (
             <WelcomeScreen
               handleSubmit={handleSubmit}
