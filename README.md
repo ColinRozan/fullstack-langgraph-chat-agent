@@ -17,6 +17,9 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 - 🎯 **Research Depth Control** — Choose between Low, Medium, and High effort modes to adjust query count and max reflection loops.
 - 🔄 **Model Selection** — Switch between available LLM models for different agent stages.
 - 🎨 **Modern Dark UI** — Tailwind CSS + Shadcn UI with collapsible activity timeline showing each research step live.
+- 🔧 **Native Tool-Calling** (reserved) — Optional native LLM structured-output / tool-calling for query generation and reflection (falls back to manual JSON parsing when disabled).
+- 🔌 **MCP Support** (reserved) — Pluggable Model Context Protocol server integration for external tool discovery and invocation.
+- 💾 **PDF Export** — Export AI answers as print-ready PDFs with light-theme rendering.
 - 🐳 **Docker Ready** — Multi-stage Dockerfile and `docker-compose.yml` for production deployment with Redis and PostgreSQL.
 
 ## Project Structure
@@ -45,7 +48,8 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 │   │   ├── prompts.py           # LLM prompt templates
 │   │   ├── configuration.py     # Agent configuration schema
 │   │   ├── knowledge_base.py    # RAG retrieval with Chroma vector store
-│   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs
+│   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs & tool/MCP schemas
+│   │   ├── mcp_client.py        # MCP (Model Context Protocol) client — reserved capability
 │   │   ├── utils.py             # Helper utilities
 │   │   └── app.py               # FastAPI entry point (serves frontend at /app)
 │   ├── examples/
@@ -160,6 +164,7 @@ cd frontend && npm run dev
 - Automatic scroll-to-bottom on new messages
 - Source panels per message: **知识库来源** (knowledge base) and **网络来源** (web sources)
 - Markdown rendering with syntax-highlighted code blocks, **tables**, and blockquotes
+- **PDF Export** — Download any AI answer as a print-ready PDF (light-theme, A4 layout) via `html-to-image` + `jsPDF`
 - Graceful error display with retry button
 
 ### Backend (LangGraph + FastAPI)
@@ -168,11 +173,13 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 
 | Node | Description |
 |------|-------------|
-| `generate_query` | Analyzes the user's question and generates diverse search queries via LLM. |
+| `generate_query` | Analyzes the user's question and generates diverse search queries via LLM. Supports native tool-calling when enabled. |
 | `web_research` | Executes DuckDuckGo search (with SearXNG fallback) and synthesizes results into summaries with citations. |
 | `rag_retrieve` | Retrieves top-k relevant document chunks from the local Chroma knowledge base. |
-| `reflection` | Analyzes web summaries and knowledge base documents to identify gaps; generates follow-up queries if needed. |
+| `reflection` | Analyzes web summaries and knowledge base documents to identify gaps; generates follow-up queries if needed. Supports native tool-calling when enabled. |
 | `finalize_answer` | Synthesizes all gathered information into a coherent, cited answer. |
+| `agent_with_tools` *(reserved)* | ReAct-style agent node that lets the LLM invoke MCP or bound tools (not wired by default). |
+| `execute_tool_calls` *(reserved)* | Executes tool calls produced by `agent_with_tools` and returns `ToolMessage` responses (not wired by default). |
 
 ### Agent Workflow
 
@@ -240,6 +247,56 @@ When knowledge base documents are retrieved and used:
 - If no relevant documents are found, the answer explicitly states: `⚠️ 未在知识库中找到相关文档，以下回答完全基于网络搜索。`
 - If web search returns no useful results, the answer states: `⚠️ 网络搜索未返回有效结果，以下回答完全基于知识库。`
 
+## Tool-Calling & MCP (Reserved Capabilities)
+
+The backend includes **optional, backward-compatible** support for two advanced LLM interaction patterns. Both are **disabled by default** so the existing research workflow is unaffected.
+
+### Native Tool-Calling / Structured Output
+
+By default, `generate_query` and `reflection` prompt the LLM to emit raw JSON and parse it manually with regex + Pydantic. When `tool_calling_enabled` is set to `true`, the agent switches to the LLM's native structured-output mechanism (`with_structured_output`), which uses the model's built-in tool-calling or JSON-mode capabilities for more reliable schema adherence.
+
+```bash
+export TOOL_CALLING_ENABLED=true
+```
+
+If the model does not support structured output, the system automatically falls back to the original manual JSON parsing.
+
+### MCP (Model Context Protocol)
+
+MCP allows the agent to discover and invoke tools from external MCP servers over stdio (or SSE) transport. This is useful for giving the agent access to filesystems, databases, APIs, command-line utilities, and more — without hard-coding tool logic into the agent itself.
+
+**1. Install optional MCP dependencies:**
+
+```bash
+cd backend
+pip install -e ".[mcp]"
+```
+
+**2. Configure MCP servers via environment variable:**
+
+```bash
+export MCP_ENABLED=true
+export MCP_SERVERS='[
+  {
+    "name": "filesystem",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  }
+]'
+```
+
+**3. Use in custom graphs:**
+
+The `agent_with_tools` and `execute_tool_calls` nodes are registered in the graph builder but **not wired into the default research pipeline**. You can wire them into a custom subgraph or replace the entry point to build a ReAct-style agent loop:
+
+```
+START → agent_with_tools → [has tool_calls?] → execute_tool_calls → agent_with_tools
+                                      ↓ no
+                              finalize_answer → END
+```
+
+> **Security Note:** MCP servers run as external processes. Only connect to trusted servers, and run them inside sandboxes (e.g., Docker) if they expose sensitive operations such as filesystem writes or shell command execution.
+
 ## Configuration
 
 Agent behavior can be customized via environment variables or runtime config:
@@ -259,6 +316,9 @@ Agent behavior can be customized via environment variables or runtime config:
 | `rag_top_k` | `5` | Number of top documents to retrieve from knowledge base |
 | `docs_dir` | `data/docs` | Directory containing documents to index for RAG |
 | `chroma_persist_dir` | `data/chroma` | Directory to persist the Chroma vector store |
+| `tool_calling_enabled` | `false` | Use native LLM tool-calling / structured-output instead of manual JSON parsing |
+| `mcp_enabled` | `false` | Enable MCP (Model Context Protocol) tool server integration |
+| `mcp_servers` | `""` | JSON-encoded list of MCP server configurations |
 
 ### Research Effort Levels
 

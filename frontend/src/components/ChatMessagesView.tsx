@@ -214,6 +214,11 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
         ? `${threadTitle.slice(0, 30)}.pdf`
         : undefined;
       await exportAsPDF(contentRef.current, filename);
+    } catch (err) {
+      console.error("PDF export failed:", err);
+      window.alert(
+        `PDF export failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     } finally {
       setIsExporting(false);
     }

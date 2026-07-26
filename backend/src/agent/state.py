@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import TypedDict, Any
 
 from langgraph.graph import add_messages
 from typing_extensions import Annotated
@@ -21,6 +21,12 @@ class OverallState(TypedDict):
     max_research_loops: int
     research_loop_count: int
     reasoning_model: str
+    # ------------------------------------------------------------------
+    # Reserved fields for tool-calling and MCP capabilities
+    # ------------------------------------------------------------------
+    tool_calls: Annotated[list, operator.add]
+    mcp_available_tools: list
+    mcp_context: Any
 
 
 class ReflectionState(TypedDict):

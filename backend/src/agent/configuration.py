@@ -59,6 +59,43 @@ class Configuration(BaseModel):
         metadata={"description": "Directory to persist the Chroma vector store."},
     )
 
+    # -----------------------------------------------------------------------
+    # Tool-calling configuration (reserved capability)
+    # -----------------------------------------------------------------------
+    tool_calling_enabled: bool = Field(
+        default=False,
+        metadata={
+            "description": (
+                "Whether to use native LLM tool-calling / structured-output "
+                "instead of manual JSON parsing."
+            )
+        },
+    )
+
+    # -----------------------------------------------------------------------
+    # MCP (Model Context Protocol) configuration (reserved capability)
+    # -----------------------------------------------------------------------
+    mcp_enabled: bool = Field(
+        default=False,
+        metadata={
+            "description": (
+                "Whether to enable MCP (Model Context Protocol) tool servers. "
+                "When enabled, tools from configured MCP servers are made "
+                "available to the agent."
+            )
+        },
+    )
+
+    mcp_servers: str = Field(
+        default="",
+        metadata={
+            "description": (
+                "JSON-encoded list of MCPServerConfig objects. "
+                'Example: \'[{"name":"filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}]\''
+            )
+        },
+    )
+
     @classmethod
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None

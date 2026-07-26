@@ -1,4 +1,4 @@
-import html2canvas from "html2canvas";
+import * as htmlToImage from "html-to-image";
 import jsPDF from "jspdf";
 
 /**
@@ -35,7 +35,8 @@ export function exportAsText(content: string, filename?: string) {
 }
 
 /**
- * Export a DOM element as PDF using html2canvas + jsPDF
+ * Export a DOM element as PDF using html-to-image + jsPDF.
+ * Renders in a light-theme clone so the PDF is white-background / dark-text.
  */
 export async function exportAsPDF(
   element: HTMLElement,
@@ -44,14 +45,43 @@ export async function exportAsPDF(
   const safeName = filename || `answer-${Date.now()}.pdf`;
   const finalName = safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`;
 
-  const canvas = await html2canvas(element, {
-    scale: 2,
-    useCORS: true,
-    backgroundColor: "#171717", // matches neutral-900 roughly
-    logging: false,
-  });
+  // Clone the element into an on-screen but invisible wrapper
+  // so html-to-image can measure and render it correctly.
+  const clone = element.cloneNode(true) as HTMLElement;
+  const wrapper = document.createElement("div");
+  wrapper.style.background = "#ffffff";
+  wrapper.style.color = "#171717";
+  wrapper.style.padding = "24px";
+  wrapper.style.position = "absolute";
+  wrapper.style.top = "0";
+  wrapper.style.left = "0";
+  wrapper.style.opacity = "0";
+  wrapper.style.pointerEvents = "none";
+  wrapper.style.zIndex = "-1";
+  wrapper.style.width = `${element.scrollWidth}px`;
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
 
-  const imgData = canvas.toDataURL("image/png");
+  // Force light-theme colours on the clone itself
+  clone.style.backgroundColor = "#ffffff";
+  clone.style.color = "#171717";
+
+  // Allow the browser to finish layout before capturing
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+  let imgData: string;
+  try {
+    imgData = await htmlToImage.toPng(wrapper, {
+      pixelRatio: 1.5,
+      backgroundColor: "#ffffff",
+    });
+  } catch (e) {
+    throw new Error(
+      `Image capture failed: ${e instanceof Error ? e.message : String(e)}`
+    );
+  } finally {
+    document.body.removeChild(wrapper);
+  }
 
   // A4 page dimensions in mm
   const pageWidth = 210;
@@ -59,8 +89,16 @@ export async function exportAsPDF(
   const margin = 10;
   const usableWidth = pageWidth - margin * 2;
 
-  const imgWidth = canvas.width;
-  const imgHeight = canvas.height;
+  // Get image dimensions from the data URL
+  const img = new Image();
+  img.src = imgData;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("Failed to load captured image"));
+  });
+
+  const imgWidth = img.naturalWidth;
+  const imgHeight = img.naturalHeight;
   const ratio = Math.min(usableWidth / imgWidth, 1);
   const scaledWidth = imgWidth * ratio;
   const scaledHeight = imgHeight * ratio;

@@ -2,9 +2,13 @@ import json
 import os
 import re
 
-from agent.tools_and_schemas import SearchQueryList, Reflection
+from agent.tools_and_schemas import (
+    SearchQueryList,
+    Reflection,
+    ToolCallResult,
+)
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Send
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
@@ -38,6 +42,7 @@ from agent.utils import (
     format_search_results,
 )
 from agent.knowledge_base import retrieve_documents
+from agent.mcp_client import create_mcp_client, MCPClient
 
 load_dotenv()
 
@@ -160,6 +165,69 @@ def _extract_json(text: str) -> dict:
     raise ValueError("No JSON object found in LLM output")
 
 
+# ---------------------------------------------------------------------------
+# Tool-calling helpers (reserved capability)
+# ---------------------------------------------------------------------------
+
+def _is_tool_calling_supported(llm: BaseChatModel) -> bool:
+    """Check whether the LLM instance supports native tool-calling."""
+    return hasattr(llm, "bind_tools") and hasattr(llm, "with_structured_output")
+
+
+def _create_structured_llm(llm: BaseChatModel, schema, use_tool_calling: bool = False):
+    """Return a runnable that produces *schema* instances.
+
+    When *use_tool_calling* is ``True`` and the LLM supports it, this uses
+    LangChain's ``with_structured_output`` (which internally uses the model's
+    native tool-calling / JSON-mode). Otherwise it falls back to plain text
+    invocation plus manual JSON extraction — the original behaviour.
+    """
+    if use_tool_calling and _is_tool_calling_supported(llm):
+        try:
+            return llm.with_structured_output(schema, include_raw=False)
+        except Exception as e:
+            print(f"[tool-calling] with_structured_output failed: {e}. Falling back to manual JSON parsing.")
+    return _ManualJsonParser(llm, schema)
+
+
+class _ManualJsonParser:
+    """Fallback wrapper that invokes the LLM in plain-text mode and parses JSON manually."""
+
+    def __init__(self, llm: BaseChatModel, schema):
+        self.llm = llm
+        self.schema = schema
+
+    def invoke(self, prompt, **kwargs):
+        raw = self.llm.invoke(prompt, **kwargs).content
+        raw_text = _extract_text(raw)
+        try:
+            parsed = _extract_json(raw_text)
+            return self.schema(**parsed)
+        except Exception as e:
+            print(f"[_ManualJsonParser] Failed to parse JSON: {e}. Raw output:\n{raw_text}")
+            raise
+
+
+# ---------------------------------------------------------------------------
+# MCP helpers (reserved capability)
+# ---------------------------------------------------------------------------
+
+_mcp_client_singleton: MCPClient | None = None
+
+
+def _get_or_create_mcp_client(configurable: Configuration) -> MCPClient | None:
+    """Lazy-initialise the MCP client from configuration.
+
+    Returns ``None`` if MCP is disabled or no servers are configured.
+    """
+    global _mcp_client_singleton
+    if not configurable.mcp_enabled:
+        return None
+    if _mcp_client_singleton is None and configurable.mcp_servers:
+        _mcp_client_singleton = create_mcp_client(configurable.mcp_servers)
+    return _mcp_client_singleton
+
+
 # Nodes
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
     """LangGraph node that generates search queries based on the User's question.
@@ -190,18 +258,20 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
         research_topic=get_research_topic(state["messages"]),
         number_queries=state["initial_search_query_count"],
     )
-    # Generate the search queries (plain text + manual JSON parse)
-    raw = llm.invoke(formatted_prompt).content
+
+    # Generate the search queries — use native tool-calling when enabled
+    structured_llm = _create_structured_llm(
+        llm, SearchQueryList, use_tool_calling=configurable.tool_calling_enabled
+    )
     try:
-        parsed = _extract_json(raw)
-        result = SearchQueryList(**parsed)
+        result = structured_llm.invoke(formatted_prompt)
     except Exception as e:
-        print(f"[generate_query] Failed to parse JSON: {e}. Raw output:\n{raw}")
-        # Fallback: return a single query derived from the research topic
+        print(f"[generate_query] Structured generation failed: {e}. Falling back to single query.")
         result = SearchQueryList(
             query=[get_research_topic(state["messages"])],
-            rationale="Fallback single query due to parsing failure.",
+            rationale="Fallback single query due to generation failure.",
         )
+
     return {
         "search_query": result.query,
         "research_topic": get_research_topic(state["messages"]),
@@ -393,26 +463,15 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
             summaries=summaries,
         )
 
-    # init Reasoning Model (plain text + manual JSON parse)
+    # init Reasoning Model — use native tool-calling when enabled
     llm = _get_llm(reasoning_model, temperature=0)
+    structured_llm = _create_structured_llm(
+        llm, Reflection, use_tool_calling=configurable.tool_calling_enabled
+    )
     try:
-        raw = llm.invoke(formatted_prompt).content
+        result = structured_llm.invoke(formatted_prompt)
     except Exception as e:
-        print(f"[reflection] LLM failed: {e}")
-        # Fallback: declare sufficient and stop the loop
-        return {
-            "is_sufficient": True,
-            "knowledge_gap": "",
-            "follow_up_queries": [],
-            "research_loop_count": state["research_loop_count"],
-            "number_of_ran_queries": len(state["search_query"]),
-        }
-
-    try:
-        parsed = _extract_json(raw)
-        result = Reflection(**parsed)
-    except Exception as e:
-        print(f"[reflection] Failed to parse JSON: {e}. Raw output:\n{raw}")
+        print(f"[reflection] Structured generation failed: {e}")
         # Fallback: declare sufficient and stop the loop
         result = Reflection(
             is_sufficient=True,
@@ -465,6 +524,108 @@ def evaluate_research(
             for idx, follow_up_query in enumerate(state["follow_up_queries"])
         ]
 
+
+# ---------------------------------------------------------------------------
+# Optional agent nodes with tool-calling support (reserved capability)
+# ---------------------------------------------------------------------------
+
+def agent_with_tools(state: OverallState, config: RunnableConfig) -> OverallState:
+    """Optional LangGraph node that lets the LLM call tools (MCP or bound tools).
+
+    This node is **not wired into the default graph** — it is provided as a
+    reserved capability. If you wish to build a ReAct-style loop, wire this
+    node (and ``execute_tool_calls``) into the graph instead of the research
+    pipeline.
+
+    Args:
+        state: Current graph state containing messages
+        config: Configuration for the runnable
+
+    Returns:
+        Dictionary with state update, including messages with potential tool calls
+    """
+    configurable = Configuration.from_runnable_config(config)
+    llm = _get_llm(configurable.answer_model, temperature=0)
+
+    # Gather available tools: MCP tools (if enabled) + any statically bound tools
+    tools = []
+    mcp_client = _get_or_create_mcp_client(configurable)
+    if mcp_client:
+        try:
+            tools.extend(mcp_client.to_langchain_tools())
+        except Exception as e:
+            print(f"[agent_with_tools] Failed to load MCP tools: {e}")
+
+    if tools and _is_tool_calling_supported(llm):
+        llm_with_tools = llm.bind_tools(tools)
+    else:
+        llm_with_tools = llm
+
+    messages = state["messages"]
+    response = llm_with_tools.invoke(messages)
+    return {"messages": [response]}
+
+
+def execute_tool_calls(state: OverallState, config: RunnableConfig) -> OverallState:
+    """Execute any tool calls present in the last AIMessage.
+
+    This is the companion node to :func:`agent_with_tools`. It inspects the
+    last message for ``tool_calls``, executes them, and returns
+    :class:`~langchain_core.messages.ToolMessage` instances.
+
+    Args:
+        state: Current graph state
+        config: Configuration for the runnable
+
+    Returns:
+        Dictionary with state update containing ToolMessages
+    """
+    configurable = Configuration.from_runnable_config(config)
+    messages = state["messages"]
+    if not messages:
+        return {"messages": []}
+
+    last_message = messages[-1]
+    if not isinstance(last_message, AIMessage) or not getattr(last_message, "tool_calls", None):
+        return {"messages": []}
+
+    tool_messages = []
+    mcp_client = _get_or_create_mcp_client(configurable)
+
+    for tc in last_message.tool_calls:
+        tool_name = tc.get("name", "")
+        tool_args = tc.get("args", {})
+        tool_id = tc.get("id", "")
+
+        output = None
+        error = None
+
+        # Try MCP first (if available)
+        if mcp_client:
+            try:
+                import asyncio
+                output = asyncio.run(mcp_client.call_tool(tool_name, tool_args))
+            except Exception as e:
+                error = f"MCP tool call failed: {e}"
+
+        # If no MCP result, leave it to the caller to handle via bound tools
+        if output is None and error is None:
+            error = f"Tool '{tool_name}' is not available via MCP and no local handler is registered."
+
+        tool_messages.append(
+            ToolMessage(
+                content=json.dumps({"output": output, "error": error}, default=str),
+                tool_call_id=tool_id,
+                name=tool_name,
+            )
+        )
+
+    return {"messages": tool_messages}
+
+
+# ---------------------------------------------------------------------------
+# Finalize answer (existing node, unchanged logic)
+# ---------------------------------------------------------------------------
 
 def finalize_answer(state: OverallState, config: RunnableConfig):
     """LangGraph node that finalizes the research summary.
@@ -539,6 +700,17 @@ builder.add_node("web_research", web_research)
 builder.add_node("rag_retrieve", rag_retrieve)
 builder.add_node("reflection", reflection)
 builder.add_node("finalize_answer", finalize_answer)
+
+# ---------------------------------------------------------------------------
+# Reserved-capability nodes (not wired by default)
+# ---------------------------------------------------------------------------
+# ``agent_with_tools`` and ``execute_tool_calls`` provide a ReAct-style
+# tool-calling loop. They are registered so they can be wired in later
+# (e.g. via a sub-graph or a conditional entry-point) without changing
+# the default research pipeline.
+# ---------------------------------------------------------------------------
+builder.add_node("agent_with_tools", agent_with_tools)
+builder.add_node("execute_tool_calls", execute_tool_calls)
 
 # Set the entrypoint as `generate_query`
 # This means that this node is the first one called
