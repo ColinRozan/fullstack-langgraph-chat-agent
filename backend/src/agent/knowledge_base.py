@@ -8,7 +8,6 @@ from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 
 
 # Default paths relative to backend/
@@ -16,21 +15,36 @@ DEFAULT_DOCS_DIR = Path(__file__).parent.parent.parent / "data" / "docs"
 DEFAULT_CHROMA_DIR = Path(__file__).parent.parent.parent / "data" / "chroma"
 
 
-class ChromaDefaultEmbeddings(Embeddings):
-    """LangChain-compatible wrapper around Chroma's built-in ONNX embedding function.
+class FastEmbedEmbeddings(Embeddings):
+    """LangChain-compatible wrapper around fastembed (ONNX-based) embedding.
 
-    This uses the lightweight all-MiniLM-L6-v2 ONNX model bundled with chromadb,
-    requiring no external API keys or heavy PyTorch dependencies.
+    Uses BAAI/bge-small-zh-v1.5 for high-quality Chinese semantic retrieval.
+    Falls back to all-MiniLM-L6-v2 if the Chinese model fails to load.
     """
 
     def __init__(self) -> None:
-        self._ef = DefaultEmbeddingFunction()
+        from fastembed import TextEmbedding
+        try:
+            self._model = TextEmbedding(model_name="BAAI/bge-small-zh-v1.5")
+            print("[Knowledge Base] Using BAAI/bge-small-zh-v1.5 for embeddings")
+        except Exception as e:
+            print(f"[Knowledge Base] Failed to load bge-small-zh-v1.5: {e}, falling back to all-MiniLM-L6-v2")
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+            self._model = None
+            self._fallback = DefaultEmbeddingFunction()
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return self._ef(texts)
+        if self._model is None:
+            return self._fallback(texts)
+        results = list(self._model.embed(texts))
+        # fastembed returns numpy arrays; convert to plain Python lists
+        return [r.tolist() if hasattr(r, "tolist") else list(r) for r in results]
 
     def embed_query(self, text: str) -> List[float]:
-        return self._ef([text])[0]
+        if self._model is None:
+            return self._fallback([text])[0]
+        result = list(self._model.embed([text]))[0]
+        return result.tolist() if hasattr(result, "tolist") else list(result)
 
 
 def _load_documents(docs_dir: Path) -> List[Document]:
@@ -114,7 +128,7 @@ def get_vectorstore(
     """
     docs_dir = docs_dir or DEFAULT_DOCS_DIR
     chroma_dir = chroma_dir or DEFAULT_CHROMA_DIR
-    embeddings = ChromaDefaultEmbeddings()
+    embeddings = FastEmbedEmbeddings()
 
     if chroma_dir.exists() and any(chroma_dir.iterdir()):
         try:

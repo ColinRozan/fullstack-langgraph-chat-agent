@@ -1,23 +1,22 @@
 # Fullstack LangGraph Quickstart
 
-This project demonstrates a fullstack application using a React frontend and a LangGraph-powered backend agent. The agent is designed to perform comprehensive research on a user's query by dynamically generating search terms, querying the web using Google Search, reflecting on the results to identify knowledge gaps, and iteratively refining its search until it can provide a well-supported answer with citations. This application serves as an example of building research-augmented conversational AI using LangGraph and Anthropic-compatible models.
-
-> **Note:** The models used in this project are based on the Anthropic protocol and can be switched as needed.
+A fullstack research assistant powered by **LangGraph**, **Google Gemini**, and a modern **React** frontend. The agent performs comprehensive research on your queries by dynamically generating search terms, querying the web via DuckDuckGo (with SearXNG fallback), retrieving documents from a local knowledge base, reflecting on results to identify knowledge gaps, and iteratively refining its search until it delivers a well-supported answer with inline citations.
 
 <img src="./app.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
 
 ## Features
 
-- 💬 Fullstack application with a React frontend and LangGraph backend.
-- 🧠 Powered by a LangGraph agent for advanced research and conversational AI.
-- 🔍 Dynamic search query generation using Anthropic-compatible models.
-- 🌐 Integrated web research via DuckDuckGo with SearXNG fallback.
-- 📚 **RAG Knowledge Base**: Local document retrieval powered by Chroma vector store, supporting PDF, TXT, and Markdown files.
-- 🤔 Reflective reasoning to identify knowledge gaps and refine searches.
-- 📄 Generates answers with citations from both web sources and knowledge base documents.
-- 🎯 **Research Depth Control**: Choose between Low, Medium, and High effort modes to adjust query count and iteration loops.
-- 🔄 Hot-reloading for both frontend and backend during development.
-- 🎨 Modern UI with real-time activity timeline showing each research step.
+- 💬 **Conversational Research UI** — Modern React chat interface with real-time streaming.
+- 🧠 **LangGraph Agent** — Stateful agent workflow with query generation, parallel web research, RAG retrieval, reflection, and answer synthesis.
+- 🔍 **Dynamic Query Generation** — LLM generates diverse, targeted search queries from your question.
+- 🌐 **Multi-Backend Web Search** — DuckDuckGo primary search with automatic SearXNG fallback.
+- 📚 **RAG Knowledge Base** — Local document retrieval powered by Chroma vector store; supports PDF, TXT, and Markdown.
+- 🤔 **Reflective Reasoning** — Analyzes gathered information to identify gaps and decides whether to continue researching.
+- 📄 **Inline Citations** — Distinguishes web sources `[🌐 Title](URL)` from knowledge base sources `[📄 source: filename.pdf]`.
+- 🎯 **Research Depth Control** — Choose between Low, Medium, and High effort modes to adjust query count and max reflection loops.
+- 🔄 **Model Selection** — Switch between available LLM models (e.g., Ark Code, Kimi K3) for different agent stages.
+- 🎨 **Modern Dark UI** — Tailwind CSS + Shadcn UI with collapsible activity timeline showing each research step live.
+- 🐳 **Docker Ready** — Multi-stage Dockerfile and `docker-compose.yml` for production deployment with Redis and PostgreSQL.
 
 ## Project Structure
 
@@ -25,52 +24,80 @@ This project demonstrates a fullstack application using a React frontend and a L
 .
 ├── frontend/                     # React + Vite frontend application
 │   ├── src/
-│   │   ├── App.tsx              # Main application component with LangGraph SDK stream
-│   │   ├── components/          # UI components (Chat, WelcomeScreen, ActivityTimeline)
-│   │   └── ...
+│   │   ├── App.tsx              # Main app component with LangGraph SDK streaming
+│   │   ├── components/
+│   │   │   ├── ChatMessagesView.tsx   # Chat history, markdown rendering, sources
+│   │   │   ├── InputForm.tsx          # Text input with effort/model selectors
+│   │   │   ├── WelcomeScreen.tsx      # Landing page
+│   │   │   ├── ActivityTimeline.tsx   # Real-time research step timeline
+│   │   │   └── ui/                    # Shadcn UI primitives
+│   │   ├── main.tsx
+│   │   └── global.css
 │   ├── package.json
-│   └── vite.config.ts
+│   ├── vite.config.ts
+│   └── tsconfig.json
 ├── backend/                      # LangGraph + FastAPI backend
 │   ├── src/agent/
-│   │   ├── graph.py             # Core LangGraph agent definition
+│   │   ├── graph.py             # Core LangGraph agent definition (nodes & edges)
 │   │   ├── state.py             # TypedDict state definitions
 │   │   ├── prompts.py           # LLM prompt templates
-│   │   ├── configuration.py     # Agent configuration (models, RAG settings)
+│   │   ├── configuration.py     # Agent configuration schema
 │   │   ├── knowledge_base.py    # RAG retrieval with Chroma vector store
-│   │   ├── tools_and_schemas.py # Pydantic schemas for LLM outputs
-│   │   └── utils.py             # Helper utilities
+│   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs
+│   │   ├── utils.py             # Helper utilities
+│   │   └── app.py               # FastAPI entry point (serves frontend at /app)
 │   ├── examples/
 │   │   └── cli_research.py      # CLI example for running research
-│   └── data/
-│       ├── docs/                # Place your documents here for RAG
-│       └── chroma/              # Chroma vector store persistence
+│   ├── data/
+│   │   ├── docs/                # Place your documents here for RAG
+│   │   └── chroma/              # Chroma vector store persistence
+│   ├── pyproject.toml
+│   ├── langgraph.json           # LangGraph project configuration
+│   └── .env.example
 ├── docker-compose.yml
 ├── Dockerfile
+├── Makefile
 └── README.md
 ```
 
-## Getting Started: Development and Local Testing
+## Getting Started
 
-Follow these steps to get the application running locally for development and testing.
+### Prerequisites
 
-**1. Prerequisites:**
+- **Node.js** and **npm** (or yarn/pnpm)
+- **Python 3.11+**
+- An API key for an LLM provider:
+  - **Anthropic-compatible** (e.g., Volcengine Ark) — set `ANTHROPIC_API_KEY` and optionally `ANTHROPIC_BASE_URL`
+  - **OpenAI-compatible** — set `OPENAI_API_KEY` and optionally `OPENAI_BASE_URL`
 
--   Node.js and npm (or yarn/pnpm)
--   Python 3.11+
--   **`ANTHROPIC_API_KEY`**: The backend agent requires an Anthropic API key (or a compatible provider key).
-    1.  Navigate to the `backend/` directory.
-    2.  Create a file named `.env` by copying the `backend/.env.example` file.
-    3.  Open the `.env` file and add your API key: `ANTHROPIC_API_KEY="YOUR_ACTUAL_API_KEY"`
+### 1. Configure Environment Variables
 
-    > The models used in this project are based on the Anthropic protocol and can be switched to any compatible provider by adjusting the `ANTHROPIC_BASE_URL` and model names in the `.env` file.
+```bash
+cd backend
+cp .env.example .env
+```
 
-**2. Install Dependencies:**
+Edit `backend/.env` with your API keys. Example for an Anthropic-compatible provider:
+
+```env
+ANTHROPIC_API_KEY="your-api-key"
+ANTHROPIC_BASE_URL="https://ark.cn-beijing.volces.com/api/plan"
+```
+
+Example for an OpenAI-compatible provider:
+
+```env
+OPENAI_API_KEY="your-api-key"
+OPENAI_BASE_URL="https://api.openai.com/v1"
+```
+
+### 2. Install Dependencies
 
 **Backend:**
 
 ```bash
 cd backend
-pip install .
+pip install -e .
 ```
 
 **Frontend:**
@@ -80,65 +107,95 @@ cd frontend
 npm install
 ```
 
-**3. Run Development Servers:**
+### 3. Run Development Servers
 
-**Backend & Frontend:**
+**Both (recommended):**
 
 ```bash
 make dev
 ```
-This will run the backend and frontend development servers.    Open your browser and navigate to the frontend development server URL (e.g., `http://localhost:5173/app`).
 
-_Alternatively, you can run the backend and frontend development servers separately. For the backend, open a terminal in the `backend/` directory and run `langgraph dev`. The backend API will be available at `http://127.0.0.1:2024`. It will also open a browser window to the LangGraph UI. For the frontend, open a terminal in the `frontend/` directory and run `npm run dev`. The frontend will be available at `http://localhost:5173`._
+This starts the backend (`langgraph dev`) and frontend (`vite`) concurrently.
+
+- **Frontend:** http://localhost:5173/app
+- **LangGraph Studio:** http://localhost:2024
+
+**Alternatively, run separately:**
+
+```bash
+# Terminal 1 — Backend
+cd backend && langgraph dev
+
+# Terminal 2 — Frontend
+cd frontend && npm run dev
+```
+
+> The frontend Vite dev server proxies `/api` requests to `http://127.0.0.1:8000`.
 
 ## Architecture Overview
 
-### Frontend (React + Vite)
+### Frontend (React 19 + Vite 6 + Tailwind CSS 4)
 
-The frontend is a modern React application built with Vite, featuring:
+| Component | Description |
+|-----------|-------------|
+| `App.tsx` | Orchestrates `useStream` from `@langchain/langgraph-sdk/react`, manages timeline state, message sources, and error handling. |
+| `WelcomeScreen.tsx` | Clean landing page with search input. |
+| `InputForm.tsx` | Textarea with Ctrl/Cmd+Enter submit, effort selector (Low/Medium/High), and model selector (Ark Code / Kimi K3). |
+| `ChatMessagesView.tsx` | Renders conversation history with ReactMarkdown, copy-to-clipboard, and source citation panels. |
+| `ActivityTimeline.tsx` | Collapsible real-time timeline showing research steps with contextual icons. |
 
-- **Real-time Streaming**: Uses `@langchain/langgraph-sdk/react` `useStream` hook to stream agent events in real-time.
-- **Activity Timeline**: Displays each research step live — Query Generation → Web Research → RAG Retrieval → Reflection → Finalizing Answer.
-- **Research Depth Selector**: Users can choose `Low` (1 query, 1 loop), `Medium` (3 queries, 3 loops), or `High` (5 queries, 10 loops) effort modes.
-- **Model Selection**: Supports switching between different LLM models for query generation, reflection, and answer synthesis.
-- **Source Citations**: Visual distinction between web sources [🌐] and knowledge base sources [📄] in the final answer.
-- **UI Stack**: React 18, Tailwind CSS, Shadcn UI components, Radix UI primitives.
+**Key frontend features:**
+- Real-time streaming via `@langchain/langgraph-sdk/react` `useStream` hook
+- Automatic scroll-to-bottom on new messages
+- Source panels per message: **知识库来源** (knowledge base) and **网络来源** (web sources)
+- Markdown rendering with syntax-highlighted code blocks, tables, and blockquotes
+- Graceful error display with retry button
 
 ### Backend (LangGraph + FastAPI)
 
-The backend is built on LangGraph with a stateful agent graph:
+The backend is a stateful LangGraph agent compiled into a research workflow:
 
 | Node | Description |
 |------|-------------|
-| `generate_query` | Generates diverse search queries based on the user's question |
-| `web_research` | Performs web search via DuckDuckGo (with SearXNG fallback) and synthesizes results |
-| `rag_retrieve` | Retrieves relevant documents from the local Chroma knowledge base |
-| `reflection` | Analyzes gathered information to identify knowledge gaps and decide whether to continue |
-| `finalize_answer` | Synthesizes web research and knowledge base results into a coherent, cited answer |
+| `generate_query` | Analyzes the user's question and generates diverse search queries via LLM. |
+| `web_research` | Executes DuckDuckGo search (with SearXNG fallback) and synthesizes results into summaries with citations. |
+| `rag_retrieve` | Retrieves top-k relevant document chunks from the local Chroma knowledge base. |
+| `reflection` | Analyzes web summaries and knowledge base documents to identify gaps; generates follow-up queries if needed. |
+| `finalize_answer` | Synthesizes all gathered information into a coherent, cited answer. |
 
 ### Agent Workflow
 
 <img src="./agent.png" title="Agent Flow" alt="Agent Flow" width="50%">
 
-1.  **Generate Initial Queries:** Based on your input, it generates a set of initial search queries using a configured LLM.
-2.  **Parallel Research:** Spawns parallel `web_research` nodes (one per query) **and** a `rag_retrieve` node to query the local knowledge base simultaneously.
-3.  **Web Research:** For each query, performs DuckDuckGo search (with SearXNG fallback) and uses LLM to synthesize search results into summaries with citations.
-4.  **RAG Retrieval:** Searches the local Chroma vector store for the top-k most relevant document chunks related to the research topic.
-5.  **Reflection & Knowledge Gap Analysis:** The agent analyzes both web research summaries and knowledge base documents to determine if the information is sufficient. If RAG documents are present, the reflection prompt explicitly considers both sources.
-6.  **Iterative Refinement:** If gaps are found, it generates follow-up queries and repeats the web research and reflection steps (up to a configured maximum number of loops).
-7.  **Finalize Answer:** Once research is sufficient, the agent synthesizes all gathered information into a coherent answer, with inline citations distinguishing web sources `[🌐 Title](URL)` from knowledge base sources `[📄 source: filename.pdf]`.
+1. **Generate Queries:** Based on user input, the LLM creates optimized search queries.
+2. **Parallel Research:** Spawns parallel `web_research` nodes (one per query) **and** a `rag_retrieve` node simultaneously.
+3. **Web Research:** For each query, performs web search and uses LLM to synthesize results into summaries.
+4. **RAG Retrieval:** Searches the local Chroma vector store for relevant document chunks.
+5. **Reflection:** Analyzes both web research and knowledge base results. If gaps exist, generates follow-up queries.
+6. **Iterative Refinement:** Repeats web research and reflection with follow-up queries (up to the configured max loops).
+7. **Finalize:** Combines all sources into a final answer with inline citations and source distinction.
+
+### LLM Provider Logic
+
+The backend automatically selects the LLM client based on environment variables:
+
+- **OpenAI-compatible API** is used when both `OPENAI_API_KEY` and `OPENAI_BASE_URL` are set.
+- **Anthropic / Ark fallback** is used otherwise, reading `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`.
+
+This dual-provider support lets you switch between OpenAI-compatible endpoints and Anthropic-compatible endpoints (e.g., Volcengine Ark) without code changes.
 
 ## RAG Knowledge Base
 
-This project includes a built-in **Retrieval-Augmented Generation (RAG)** system that allows the agent to query your local documents alongside web research.
+The built-in **Retrieval-Augmented Generation (RAG)** system allows the agent to query your local documents alongside web research.
 
 ### How It Works
 
-- **Vector Store**: Uses [Chroma](https://www.trychroma.com/) with the lightweight `all-MiniLM-L6-v2` ONNX embedding model (bundled with Chroma, no external API keys needed).
-- **Document Loading**: Automatically loads and indexes documents from `backend/data/docs/` on first startup.
-- **Supported Formats**: PDF, TXT, Markdown (`.md`, `.markdown`).
-- **Text Splitting**: Documents are split into 1000-character chunks with 200-character overlap for optimal retrieval.
-- **Graceful Degradation**: If no documents are found or RAG is disabled, the system falls back to web-only research without errors.
+- **Vector Store:** [Chroma](https://www.trychroma.com/) with persistence.
+- **Embedding Model:** `BAAI/bge-small-zh-v1.5` (ONNX-based, optimized for Chinese semantic retrieval). Falls back to Chroma's default `all-MiniLM-L6-v2` if loading fails.
+- **Document Loading:** Automatically loads and indexes documents from `backend/data/docs/` on first startup.
+- **Supported Formats:** PDF (via PyPDFLoader), TXT, Markdown (`.md`, `.markdown`).
+- **Text Splitting:** Recursive character splitter with 1000-character chunks and 200-character overlap.
+- **Graceful Degradation:** If no documents are found, RAG is disabled, or retrieval fails, the system falls back to web-only research without errors.
 
 ### Adding Your Documents
 
@@ -150,19 +207,21 @@ This project includes a built-in **Retrieval-Augmented Generation (RAG)** system
 
 When knowledge base documents are retrieved and used:
 
-- Relevant paragraphs are prefixed with `**【基于知识库】**` (Based on Knowledge Base).
+- Paragraphs primarily based on the knowledge base are prefixed with `**【基于知识库】**`.
+- Paragraphs primarily based on web research are prefixed with `**【基于网络搜索】**`.
 - Inline citations use the format `[📄 source: filename.pdf]`.
 - If no relevant documents are found, the answer explicitly states: `⚠️ 未在知识库中找到相关文档，以下回答完全基于网络搜索。`
+- If web search returns no useful results, the answer states: `⚠️ 网络搜索未返回有效结果，以下回答完全基于知识库。`
 
 ## Configuration
 
-The agent behavior can be customized via environment variables (in `backend/.env`) or passed at runtime:
+Agent behavior can be customized via environment variables or runtime config:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | — | API key for Anthropic-compatible LLM provider |
 | `ANTHROPIC_BASE_URL` | — | Base URL for Anthropic-compatible API |
-| `OPENAI_API_KEY` | — | Alternative: use OpenAI-compatible API |
+| `OPENAI_API_KEY` | — | API key for OpenAI-compatible provider |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
 | `query_generator_model` | `kimi-k3` | Model for search query generation |
 | `reflection_model` | `kimi-k3` | Model for reflection and gap analysis |
@@ -171,62 +230,85 @@ The agent behavior can be customized via environment variables (in `backend/.env
 | `max_research_loops` | `2` | Maximum research reflection loops |
 | `rag_enabled` | `true` | Enable/disable RAG knowledge base retrieval |
 | `rag_top_k` | `5` | Number of top documents to retrieve from knowledge base |
+| `docs_dir` | `data/docs` | Directory containing documents to index for RAG |
+| `chroma_persist_dir` | `data/chroma` | Directory to persist the Chroma vector store |
 
-> **Note:** If both `OPENAI_API_KEY` and `OPENAI_BASE_URL` are set, the agent will use the OpenAI-compatible API. Otherwise, it falls back to Anthropic/Ark.
+### Research Effort Levels
+
+| Level | Initial Queries | Max Loops |
+|-------|-----------------|-----------|
+| Low | 1 | 1 |
+| Medium | 3 | 3 |
+| High | 5 | 10 |
 
 ## CLI Example
 
-For quick one-off questions you can execute the agent from the command line. The
-script `backend/examples/cli_research.py` runs the LangGraph agent and prints the
-final answer:
+For quick one-off questions, run the agent directly from the command line without starting the web UI:
 
 ```bash
 cd backend
-python examples/cli_research.py "What are the latest trends in renewable energy?"
+python examples/cli_research.py "What are the latest trends in renewable energy?" \
+  --initial-queries 3 \
+  --max-loops 2 \
+  --reasoning-model gemini-2.5-pro-preview-05-06
 ```
-
 
 ## Deployment
 
-In production, the backend server serves the optimized static frontend build. LangGraph requires a Redis instance and a Postgres database. Redis is used as a pub-sub broker to enable streaming real time output from background runs. Postgres is used to store assistants, threads, runs, persist thread state and long term memory, and to manage the state of the background task queue with 'exactly once' semantics. For more details on how to deploy the backend server, take a look at the [LangGraph Documentation](https://langchain-ai.github.io/langgraph/concepts/deployment_options/). Below is an example of how to build a Docker image that includes the optimized frontend build and the backend server and run it via `docker-compose`.
+### Docker Compose (Production)
 
-_Note: For the docker-compose.yml example you need a LangSmith API key, you can get one from [LangSmith](https://smith.langchain.com/settings)._
+The included `docker-compose.yml` spins up Redis (pub/sub for streaming), PostgreSQL (state persistence), and the LangGraph API server.
 
-_Note: If you are not running the docker-compose.yml example or exposing the backend server to the public internet, you should update the `apiUrl` in the `frontend/src/App.tsx` file to your host. Currently the `apiUrl` is set to `http://localhost:8123` for docker-compose or `http://localhost:2024` for development._
+**1. Build the Docker image:**
 
-**1. Build the Docker Image:**
+```bash
+docker build -t gemini-fullstack-langgraph -f Dockerfile .
+```
 
-   Run the following command from the **project root directory**:
-   ```bash
-   docker build -t fullstack-langgraph -f Dockerfile .
-   ```
-**2. Run the Production Server:**
+**2. Run the stack:**
 
-   ```bash
-   ANTHROPIC_API_KEY=<your_anthropic_api_key> LANGSMITH_API_KEY=<your_langsmith_api_key> docker-compose up
-   ```
+```bash
+GEMINI_API_KEY=<your_key> LANGSMITH_API_KEY=<your_key> docker-compose up
+```
 
-Open your browser and navigate to `http://localhost:8123/app/` to see the application. The API will be available at `http://localhost:8123`.
+> For `docker-compose.yml`, you need a LangSmith API key from [LangSmith](https://smith.langchain.com/settings).
+
+**3. Access the application:**
+
+- **App:** http://localhost:8123/app/
+- **API:** http://localhost:8123
+
+### Notes on Production URLs
+
+- The `Dockerfile` copies the built frontend into `/deps/frontend/dist` and mounts it at `/app` via FastAPI.
+- The frontend `App.tsx` uses `http://localhost:8123` as the API URL in production builds and `http://localhost:2024` in development.
+- Update the `apiUrl` in `frontend/src/App.tsx` if you are hosting the backend on a different domain.
 
 ## Technologies Used
 
 ### Frontend
-- [React](https://reactjs.org/) (with [Vite](https://vitejs.dev/)) - Frontend framework and build tool.
-- [Tailwind CSS](https://tailwindcss.com/) - Utility-first CSS framework.
-- [Shadcn UI](https://ui.shadcn.com/) - Re-usable component primitives.
-- [@langchain/langgraph-sdk](https://github.com/langchain-ai/langgraph) - SDK for streaming LangGraph agent events.
+- [React 19](https://react.dev/) — UI library
+- [Vite 6](https://vitejs.dev/) — Build tool and dev server
+- [TypeScript 5.7](https://www.typescriptlang.org/) — Type safety
+- [Tailwind CSS 4.1](https://tailwindcss.com/) — Utility-first CSS framework
+- [Shadcn UI](https://ui.shadcn.com/) — Re-usable component primitives (Radix UI)
+- [Lucide React](https://lucide.dev/) — Icons
+- [@langchain/langgraph-sdk](https://github.com/langchain-ai/langgraph) — SDK for streaming LangGraph agent events
+- [React Markdown](https://github.com/remarkjs/react-markdown) — Markdown rendering
 
 ### Backend
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Framework for building stateful agent workflows.
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern, fast web framework for the API server.
-- [LangChain Anthropic](https://python.langchain.com/) / [LangChain Community](https://python.langchain.com/) - LLM integrations and document loaders.
-- [Chroma](https://www.trychroma.com/) - Open-source embedding database for RAG retrieval.
-- [DuckDuckGo Search](https://github.com/deedy5/duckduckgo_search) - Web search API with fallback to SearXNG.
+- [LangGraph](https://github.com/langchain-ai/langgraph) — Framework for building stateful agent workflows
+- [FastAPI](https://fastapi.tiangolo.com/) — Web framework for serving the frontend
+- [LangChain](https://python.langchain.com/) / [LangChain Anthropic](https://python.langchain.com/) — LLM integrations
+- [Chroma](https://www.trychroma.com/) — Open-source embedding database for RAG retrieval
+- [DuckDuckGo Search](https://github.com/deedy5/duckduckgo_search) — Web search API with SearXNG fallback
+- [PyPDF](https://github.com/py-pdf/pypdf) — PDF document loading
+- [Pydantic](https://docs.pydantic.dev/) — Data validation and configuration
 
-### Models
-- [Anthropic Claude](https://www.anthropic.com/claude) (or any Anthropic-compatible model) - Default LLM for query generation, reflection, and answer synthesis.
-- OpenAI-compatible models - Alternative LLM provider via `OPENAI_API_KEY` / `OPENAI_BASE_URL`.
+### Infrastructure
+- [Redis](https://redis.io/) — Pub/sub broker for real-time streaming
+- [PostgreSQL](https://www.postgresql.org/) — Persistence for threads, runs, and state
 
 ## License
 
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details. 
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
