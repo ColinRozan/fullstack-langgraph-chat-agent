@@ -127,8 +127,17 @@ Instructions:
 - You have access to all the information gathered from the previous steps.
 - You have access to the user's question.
 - Generate a high-quality answer to the user's question based on the provided web research summaries, knowledge base documents, and the user's question.
-- For web search sources, include citations in markdown format (e.g. [apnews](https://vertexaisearch.cloud.google.com/id/1-0)). THIS IS A MUST.
-- For knowledge base documents, cite them using the source file name, e.g. [source: mydoc.pdf].
+
+CRITICAL SOURCE DISTINCTION RULES:
+1. For EVERY key fact, claim, or data point in your answer, you MUST append an inline source tag indicating where it came from.
+2. Use these exact formats:
+   - Web search: [🌐 Title](URL)
+   - Knowledge base: [📄 source: filename.pdf]
+3. If a fact appears in BOTH sources, cite BOTH like: [🌐 Title](URL) [📄 source: file.pdf]
+4. If a paragraph or section is based PRIMARILY on knowledge base documents, prefix it with: **【基于知识库】**
+5. If a paragraph or section is based PRIMARILY on web research, prefix it with: **【基于网络搜索】**
+6. If NO knowledge base documents are relevant, explicitly state at the top: "⚠️ 未在知识库中找到相关文档，以下回答完全基于网络搜索。"
+7. If web search returned no useful results, explicitly state: "⚠️ 网络搜索未返回有效结果，以下回答完全基于知识库。"
 
 User Context:
 - {research_topic}

@@ -13,8 +13,12 @@ export default function App() {
   const [historicalActivities, setHistoricalActivities] = useState<
     Record<string, ProcessedEvent[]>
   >({});
+  const [messageSources, setMessageSources] = useState<
+    Record<string, { rag_sources: any[]; web_sources: any[] }>
+  >({});
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const hasFinalizeEventOccurredRef = useRef(false);
+  const pendingSourcesRef = useRef<{ rag_sources: any[]; web_sources: any[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const thread = useStream<{
     messages: Message[];
@@ -59,9 +63,16 @@ export default function App() {
           data: "Analysing Web Research Results",
         };
       } else if (event.finalize_answer) {
+        const fa = event.finalize_answer;
+        const ragCount = (fa.rag_sources || []).length;
+        const webCount = (fa.sources_gathered || []).length;
         processedEvent = {
           title: "Finalizing Answer",
-          data: "Composing and presenting the final answer.",
+          data: `Composing answer. Sources: ${ragCount} knowledge base, ${webCount} web.`,
+        };
+        pendingSourcesRef.current = {
+          rag_sources: fa.rag_sources || [],
+          web_sources: fa.sources_gathered || [],
         };
         hasFinalizeEventOccurredRef.current = true;
       }
@@ -100,6 +111,13 @@ export default function App() {
           ...prev,
           [lastMessage.id!]: [...processedEventsTimeline],
         }));
+        if (pendingSourcesRef.current) {
+          setMessageSources((prev) => ({
+            ...prev,
+            [lastMessage.id!]: pendingSourcesRef.current!,
+          }));
+          pendingSourcesRef.current = null;
+        }
       }
       hasFinalizeEventOccurredRef.current = false;
     }
@@ -187,6 +205,7 @@ export default function App() {
               onCancel={handleCancel}
               liveActivityEvents={processedEventsTimeline}
               historicalActivities={historicalActivities}
+              messageSources={messageSources}
             />
           )}
       </main>

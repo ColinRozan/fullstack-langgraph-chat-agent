@@ -168,6 +168,7 @@ interface AiMessageBubbleProps {
   mdComponents: typeof mdComponents;
   handleCopy: (text: string, messageId: string) => void;
   copiedMessageId: string | null;
+  sources?: { rag_sources: any[]; web_sources: any[] };
 }
 
 // AiMessageBubble Component
@@ -180,6 +181,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   mdComponents,
   handleCopy,
   copiedMessageId,
+  sources,
 }) => {
   // Determine which activity events to show and if it's for a live loading message
   const activityForThisBubble =
@@ -201,9 +203,62 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
           ? message.content
           : JSON.stringify(message.content)}
       </ReactMarkdown>
+
+      {/* Source panels */}
+      {sources && (sources.rag_sources.length > 0 || sources.web_sources.length > 0) && (
+        <div className="mt-4 pt-3 border-t border-neutral-700 space-y-2">
+          {sources.rag_sources.length > 0 && (
+            <div>
+              <p className="text-xs text-neutral-400 mb-1.5 font-semibold flex items-center gap-1">
+                <span>📄</span> 知识库来源 ({sources.rag_sources.length})
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {sources.rag_sources.map((src: any) => (
+                  <Badge
+                    key={src.index}
+                    variant="secondary"
+                    className="text-xs bg-neutral-700 text-neutral-300 border-none hover:bg-neutral-600 cursor-default"
+                    title={src.preview}
+                  >
+                    {src.source}
+                    {src.page ? ` (p.${src.page})` : ""}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {sources.web_sources.length > 0 && (
+            <div>
+              <p className="text-xs text-neutral-400 mb-1.5 font-semibold flex items-center gap-1">
+                <span>🌐</span> 网络来源 ({sources.web_sources.length})
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {sources.web_sources.map((src: any, idx: number) => (
+                  <Badge
+                    key={idx}
+                    variant="secondary"
+                    className="text-xs bg-neutral-700 text-neutral-300 border-none hover:bg-neutral-600"
+                  >
+                    <a
+                      href={src.value}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300 hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {src.label}
+                    </a>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <Button
         variant="default"
-        className={`cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 self-end ${
+        className={`cursor-pointer bg-neutral-700 border-neutral-600 text-neutral-300 self-end mt-2 ${
           message.content.length > 0 ? "visible" : "hidden"
         }`}
         onClick={() =>
@@ -230,6 +285,7 @@ interface ChatMessagesViewProps {
   onCancel: () => void;
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
+  messageSources?: Record<string, { rag_sources: any[]; web_sources: any[] }>;
 }
 
 export function ChatMessagesView({
@@ -240,6 +296,7 @@ export function ChatMessagesView({
   onCancel,
   liveActivityEvents,
   historicalActivities,
+  messageSources,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -280,6 +337,7 @@ export function ChatMessagesView({
                       mdComponents={mdComponents}
                       handleCopy={handleCopy}
                       copiedMessageId={copiedMessageId}
+                      sources={messageSources?.[message.id!]}
                     />
                   )}
                 </div>

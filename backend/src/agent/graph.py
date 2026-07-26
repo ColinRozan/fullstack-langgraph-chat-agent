@@ -510,9 +510,23 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
             )
             unique_sources.append(source)
 
+    # Build structured RAG sources for frontend display
+    rag_sources = []
+    for i, doc in enumerate(rag_docs, 1):
+        source = doc.metadata.get("source", "unknown") if hasattr(doc, "metadata") else "unknown"
+        page = doc.metadata.get("page", "") if hasattr(doc, "metadata") else ""
+        content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+        rag_sources.append({
+            "index": i,
+            "source": source,
+            "page": page,
+            "preview": content[:300] + "..." if len(content) > 300 else content,
+        })
+
     return {
         "messages": [AIMessage(content=answer_text)],
         "sources_gathered": unique_sources,
+        "rag_sources": rag_sources,
     }
 
 
