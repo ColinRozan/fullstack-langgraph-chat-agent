@@ -1,26 +1,19 @@
 import { useStream } from "@langchain/langgraph-sdk/react";
 import type { Message } from "@langchain/langgraph-sdk";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Loader2 } from "lucide-react";
 import { ProcessedEvent } from "@/components/ActivityTimeline";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
 import { Button } from "@/components/ui/button";
 import { Sidebar, type ThreadMeta } from "@/components/Sidebar";
+import {
+  listThreads,
+  updateThread,
+  deleteThread as deleteThreadApi,
+} from "@/lib/api";
 
-const THREADS_KEY = "lg-threads";
 const ACTIVE_KEY = "lg-active-thread";
-
-function loadThreads(): ThreadMeta[] {
-  try {
-    const raw = localStorage.getItem(THREADS_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-function saveThreads(threads: ThreadMeta[]) {
-  localStorage.setItem(THREADS_KEY, JSON.stringify(threads));
-}
 
 function loadActiveThreadId(): string | null {
   try {
@@ -56,7 +49,12 @@ interface ChatSessionProps {
   onThreadUpdated: (id: string, title: string) => void;
 }
 
-function ChatSession({ threadId, threadTitle, onThreadCreated, onThreadUpdated }: ChatSessionProps) {
+function ChatSession({
+  threadId,
+  threadTitle,
+  onThreadCreated,
+  onThreadUpdated,
+}: ChatSessionProps) {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
   >([]);
@@ -76,6 +74,8 @@ function ChatSession({ threadId, threadTitle, onThreadCreated, onThreadUpdated }
   const threadCreatedRef = useRef(false);
   const [resolvedThreadId, setResolvedThreadId] = useState<string | null>(threadId);
   const lastTitleRef = useRef<string>("");
+  const prevThreadIdRef = useRef<string | null>(threadId);
+  const [isSwitching, setIsSwitching] = useState(false);
 
   const thread = useStream<{
     messages: Message[];
@@ -245,18 +245,64 @@ function ChatSession({ threadId, threadTitle, onThreadCreated, onThreadUpdated }
 
   const handleCancel = useCallback(() => {
     thread.stop();
-    window.location.reload();
   }, [thread]);
+
+  // Detect thread switch and reset local state
+  useEffect(() => {
+    if (prevThreadIdRef.current !== threadId) {
+      prevThreadIdRef.current = threadId;
+      // Do NOT stop the stream — allow it to continue in the background.
+      setProcessedEventsTimeline([]);
+      setHistoricalActivities({});
+      setMessageSources({});
+      setError(null);
+      setResolvedThreadId(threadId);
+      hasFinalizeEventOccurredRef.current = false;
+      pendingSourcesRef.current = null;
+      threadCreatedRef.current = false;
+      lastTitleRef.current = "";
+      setIsSwitching(true);
+    }
+  }, [threadId]);
+
+  // Clear switching flag once messages arrive or history fetch settles
+  useEffect(() => {
+    if (!isSwitching) return;
+    if (thread.messages.length > 0) {
+      setIsSwitching(false);
+      return;
+    }
+    const timer = setTimeout(() => setIsSwitching(false), 1000);
+    return () => clearTimeout(timer);
+  }, [thread.messages, isSwitching]);
+
+  const hasMessages = thread.messages.length > 0;
+  const isOverallLoading = thread.isLoading || isSwitching;
 
   return (
     <div className="flex h-full w-full">
       <div className="flex-1 overflow-hidden">
-        {thread.messages.length === 0 ? (
+        {!hasMessages && !isOverallLoading && threadId == null ? (
           <WelcomeScreen
             handleSubmit={handleSubmit}
             isLoading={thread.isLoading}
             onCancel={handleCancel}
           />
+        ) : !hasMessages && isOverallLoading ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <Loader2 className="h-8 w-8 animate-spin text-neutral-400" />
+            <span className="text-neutral-400 text-sm">正在加载对话…</span>
+          </div>
+        ) : !hasMessages && threadId != null ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <span className="text-neutral-400 text-sm">此对话暂无消息。后端数据可能已丢失（开发模式为内存存储）。</span>
+            <Button
+              variant="outline"
+              onClick={() => window.location.reload()}
+            >
+              刷新重试
+            </Button>
+          </div>
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full">
             <div className="flex flex-col items-center justify-center gap-4">
@@ -293,11 +339,39 @@ function ChatSession({ threadId, threadTitle, onThreadCreated, onThreadUpdated }
 /* ------------------------------------------------------------------ */
 
 export default function App() {
-  const [threads, setThreads] = useState<ThreadMeta[]>(loadThreads);
+  const [threads, setThreads] = useState<ThreadMeta[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(
     loadActiveThreadId
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [threadsLoading, setThreadsLoading] = useState(true);
+
+  // Load threads from backend on mount
+  useEffect(() => {
+    let cancelled = false;
+    listThreads()
+      .then((data) => {
+        if (!cancelled) {
+          setThreads(
+            data.map((t) => ({
+              id: t.id,
+              title: t.title,
+              createdAt: t.createdAt ? new Date(t.createdAt).getTime() : Date.now(),
+              updatedAt: t.updatedAt ? new Date(t.updatedAt).getTime() : Date.now(),
+            }))
+          );
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load threads:", err);
+      })
+      .finally(() => {
+        if (!cancelled) setThreadsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleNewChat = useCallback(() => {
     setActiveThreadId(null);
@@ -310,10 +384,14 @@ export default function App() {
   }, []);
 
   const handleDeleteThread = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      try {
+        await deleteThreadApi(id);
+      } catch (err) {
+        console.error("Failed to delete thread:", err);
+      }
       const next = threads.filter((t) => t.id !== id);
       setThreads(next);
-      saveThreads(next);
       if (activeThreadId === id) {
         setActiveThreadId(null);
         saveActiveThreadId(null);
@@ -323,33 +401,38 @@ export default function App() {
   );
 
   const handleThreadCreated = useCallback(
-    (id: string, title: string) => {
+    async (id: string, title: string) => {
       const now = Date.now();
       const next: ThreadMeta[] = [
         { id, title, createdAt: now, updatedAt: now },
         ...threads.filter((t) => t.id !== id),
       ];
       setThreads(next);
-      saveThreads(next);
-      // Note: do NOT update activeThreadId here — changing the key would
-      // remount ChatSession and interrupt the in-flight stream.
+      try {
+        await updateThread(id, title);
+      } catch (err) {
+        console.error("Failed to create thread on backend:", err);
+      }
     },
     [threads]
   );
 
   const handleThreadUpdated = useCallback(
-    (id: string, title: string) => {
+    async (id: string, title: string) => {
       setThreads((prev) => {
         const exists = prev.find((t) => t.id === id);
         if (!exists) return prev;
-        if (exists.title === title && exists.updatedAt === Date.now())
-          return prev;
+        if (exists.title === title) return prev;
         const next = prev.map((t) =>
           t.id === id ? { ...t, title, updatedAt: Date.now() } : t
         );
-        saveThreads(next);
         return next;
       });
+      try {
+        await updateThread(id, title);
+      } catch (err) {
+        console.error("Failed to update thread title:", err);
+      }
     },
     []
   );
@@ -364,10 +447,10 @@ export default function App() {
         onSelect={handleSelectThread}
         onNewChat={handleNewChat}
         onDelete={handleDeleteThread}
+        loading={threadsLoading}
       />
       <main className="flex-1 h-full overflow-hidden relative">
         <ChatSession
-          key={activeThreadId ?? "__new__"}
           threadId={activeThreadId}
           threadTitle={threads.find((t) => t.id === activeThreadId)?.title}
           onThreadCreated={handleThreadCreated}

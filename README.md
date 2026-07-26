@@ -9,6 +9,8 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 - 💬 **Conversational Research UI** — Modern React chat interface with real-time streaming.
 - 🧠 **LangGraph Agent** — Stateful agent workflow with query generation, parallel web research, RAG retrieval, reflection, and answer synthesis.
 - 🗂️ **Multi-Thread Memory** — Sidebar shows all historical conversations. Each conversation is an independent thread with full state persistence; switch threads without losing context.
+- 🐘 **PostgreSQL Persistence** — Thread metadata, session snapshots, and long-term memory are persisted to PostgreSQL. LangGraph checkpointing uses `PostgresSaver` (falls back to `MemorySaver` when the DB is unavailable).
+- 🧠 **Cross-Session Long-Term Memory** — Automatically stores research topics and answer previews in a namespace key-value store across conversations.
 - 🔍 **Dynamic Query Generation** — LLM generates diverse, targeted search queries from your question.
 - 🌐 **Multi-Backend Web Search** — DuckDuckGo primary search with automatic SearXNG fallback.
 - 📚 **RAG Knowledge Base** — Local document retrieval powered by Chroma vector store; supports PDF, TXT, and Markdown.
@@ -36,6 +38,8 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 │   │   │   ├── ActivityTimeline.tsx   # Real-time research step timeline
 │   │   │   ├── Sidebar.tsx            # Thread history sidebar (new/delete/switch)
 │   │   │   └── ui/                    # Shadcn UI primitives
+│   │   ├── lib/
+│   │   │   └── api.ts                 # Frontend API client for thread & memory endpoints
 │   │   ├── main.tsx
 │   │   └── global.css
 │   ├── package.json
@@ -50,6 +54,7 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 │   │   ├── knowledge_base.py    # RAG retrieval with Chroma vector store
 │   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs & tool/MCP schemas
 │   │   ├── mcp_client.py        # MCP (Model Context Protocol) client — reserved capability
+│   │   ├── persistence.py       # PostgreSQL persistence layer (thread metadata, memory, checkpointer)
 │   │   ├── utils.py             # Helper utilities
 │   │   └── app.py               # FastAPI entry point (serves frontend at /app)
 │   ├── examples/
@@ -195,19 +200,20 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 
 ### Memory & Thread Management
 
-The frontend maintains a **thread list** in `localStorage`:
+Thread metadata and long-term memory are now stored in **PostgreSQL** instead of browser `localStorage`:
 
-```
-lg-threads      → [{ id, title, createdAt, updatedAt }, ...]
-lg-active-thread → "<current-thread-id>"
-```
+- **Thread Metadata** — stored in the `thread_metadata` table (`thread_id`, `title`, `created_at`, `updated_at`).
+- **Session Snapshots** — a lightweight JSON snapshot of each thread's final state is saved to `session_state`.
+- **Long-Term Memory** — cross-session key-value pairs are stored in `agent_memory` (namespace → key → JSONB value).
+- **LangGraph Checkpointer** — the graph compiles with `PostgresSaver` when the DB is reachable, enabling full thread-state checkpointing. If the DB is unavailable, it gracefully falls back to `MemorySaver`.
 
-- Each thread maps to a LangGraph `thread_id` on the backend.
-- `langgraph dev` (in-memory runtime) automatically persists thread state per `thread_id`.
-- Clicking **New Chat** creates a fresh thread; clicking a sidebar item restores that thread's full conversation history.
-- Deleting a thread removes it from the sidebar list only; the backend in-memory state survives until restart.
+The frontend fetches the thread list from `/api/threads` on mount and synchronizes create/update/delete operations via REST. The only remaining `localStorage` usage is `lg-active-thread`, which remembers the last selected thread ID across page reloads.
 
-> **Production Note:** When deployed via Docker Compose with PostgreSQL, thread state persists across backend restarts.
+- Clicking **New Chat** creates a fresh thread.
+- Clicking a sidebar item switches threads without remounting the chat session (streams continue in the background).
+- Deleting a thread removes both its metadata and session snapshot from PostgreSQL.
+
+> **Development Note:** `langgraph dev` still uses an in-memory runtime by default. To enable PostgreSQL persistence during local development, set `POSTGRES_URI` and install the new dependencies (`pip install -e .`).
 
 ### LLM Provider Logic
 
@@ -303,10 +309,13 @@ Agent behavior can be customized via environment variables or runtime config:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | — | API key for Anthropic-compatible LLM provider |
 | `ANTHROPIC_BASE_URL` | — | Base URL for Anthropic-compatible API |
 | `OPENAI_API_KEY` | — | API key for OpenAI-compatible provider |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
+| `POSTGRES_URI` | `postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable` | PostgreSQL connection URI for thread metadata, memory, and LangGraph checkpointing |
 | `query_generator_model` | `ark-code-latest` | Model for search query generation |
 | `reflection_model` | `ark-code-latest` | Model for reflection and gap analysis |
 | `answer_model` | `ark-code-latest` | Model for final answer synthesis |
@@ -319,6 +328,7 @@ Agent behavior can be customized via environment variables or runtime config:
 | `tool_calling_enabled` | `false` | Use native LLM tool-calling / structured-output instead of manual JSON parsing |
 | `mcp_enabled` | `false` | Enable MCP (Model Context Protocol) tool server integration |
 | `mcp_servers` | `""` | JSON-encoded list of MCP server configurations |
+| `memory_enabled` | `true` | Enable cross-session long-term memory storage |
 
 ### Research Effort Levels
 

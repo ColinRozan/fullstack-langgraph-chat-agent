@@ -43,8 +43,33 @@ from agent.utils import (
 )
 from agent.knowledge_base import retrieve_documents
 from agent.mcp_client import create_mcp_client, MCPClient
+from agent import persistence
 
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Checkpointer initialisation (lazy so import-time DB errors are avoided)
+# ---------------------------------------------------------------------------
+_checkpointer = None
+
+
+def _get_checkpointer():
+    """Return a PostgresSaver if available, otherwise MemorySaver."""
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+    try:
+        saver = persistence.get_postgres_saver()
+        if saver is not None:
+            _checkpointer = saver
+            return _checkpointer
+    except Exception as e:
+        print(f"[graph] PostgresSaver unavailable: {e}")
+    from langgraph.checkpoint.memory import MemorySaver
+
+    _checkpointer = MemorySaver()
+    print("[graph] Falling back to MemorySaver")
+    return _checkpointer
 
 class SimpleOpenAIChat(BaseChatModel):
     """Lightweight OpenAI-compatible chat model using requests."""
@@ -634,6 +659,8 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
     combining web research and knowledge base documents to create a well-structured
     research report with proper citations.
 
+    Also persists the session state and extracts long-term memory when enabled.
+
     Args:
         state: Current graph state containing the running summary and sources gathered
 
@@ -684,6 +711,44 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
             "preview": content[:300] + "..." if len(content) > 300 else content,
         })
 
+    # -----------------------------------------------------------------------
+    # Persist session metadata + long-term memory
+    # -----------------------------------------------------------------------
+    try:
+        thread_id = config.get("configurable", {}).get("thread_id") if config else None
+        if thread_id:
+            # Update thread title from the first human message
+            research_topic = get_research_topic(state["messages"])
+            title = research_topic[:60] + "..." if len(research_topic) > 60 else research_topic
+            persistence.upsert_thread(thread_id, title)
+
+            # Persist a lightweight snapshot of the final state
+            persistence.save_session_state(
+                thread_id,
+                {
+                    "research_topic": research_topic,
+                    "answer_preview": answer_text[:500],
+                    "sources_count": len(unique_sources),
+                    "rag_sources_count": len(rag_sources),
+                    "research_loop_count": state.get("research_loop_count", 0),
+                },
+            )
+
+        # Store cross-session memory (research topics the user cares about)
+        if configurable.memory_enabled and research_topic:
+            persistence.put_memory(
+                "research_topics",
+                research_topic[:128],
+                {
+                    "topic": research_topic,
+                    "last_answer_preview": answer_text[:500],
+                    "sources_count": len(unique_sources),
+                    "timestamp": current_date,
+                },
+            )
+    except Exception as e:
+        print(f"[finalize_answer] Persistence failed (non-critical): {e}")
+
     return {
         "messages": [AIMessage(content=answer_text)],
         "sources_gathered": unique_sources,
@@ -729,4 +794,8 @@ builder.add_conditional_edges(
 # Finalize the answer
 builder.add_edge("finalize_answer", END)
 
-graph = builder.compile(name="pro-search-agent")
+# Compile with PostgresSaver when available, otherwise MemorySaver
+graph = builder.compile(
+    name="pro-search-agent",
+    checkpointer=_get_checkpointer(),
+)

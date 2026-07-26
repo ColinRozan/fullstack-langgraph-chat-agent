@@ -440,6 +440,23 @@ export function ChatMessagesView({
                 </div>
               </div>
             )}
+          {!isLoading && messages.length > 0 && messages[messages.length - 1].type === "human" && (
+            <div className="flex items-start gap-3 mt-3">
+              <div className="relative group max-w-[85%] md:max-w-[80%] rounded-xl p-3 shadow-sm break-words bg-neutral-800 text-neutral-100 rounded-bl-none w-full">
+                <p className="text-sm text-neutral-400 mb-2">
+                  回答生成可能被中断，请刷新页面查看最新结果。
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  onClick={() => window.location.reload()}
+                >
+                  刷新页面
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </ScrollArea>
       <InputForm

@@ -96,6 +96,19 @@ class Configuration(BaseModel):
         },
     )
 
+    # -----------------------------------------------------------------------
+    # PostgreSQL persistence configuration
+    # -----------------------------------------------------------------------
+    postgres_uri: str = Field(
+        default="postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable",
+        metadata={"description": "PostgreSQL connection URI for thread and memory persistence."},
+    )
+
+    memory_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable long-term memory storage across sessions."},
+    )
+
     @classmethod
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None
