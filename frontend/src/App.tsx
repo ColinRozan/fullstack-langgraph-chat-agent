@@ -5,23 +5,57 @@ import { ProcessedEvent } from "@/components/ActivityTimeline";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Sidebar, type ThreadMeta } from "@/components/Sidebar";
 
-const STORAGE_KEY = "lg-thread-id";
+const THREADS_KEY = "lg-threads";
+const ACTIVE_KEY = "lg-active-thread";
 
-function getStoredThreadId(): string | null {
-  return localStorage.getItem(STORAGE_KEY);
+function loadThreads(): ThreadMeta[] {
+  try {
+    const raw = localStorage.getItem(THREADS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
 }
 
-function setStoredThreadId(id: string) {
-  localStorage.setItem(STORAGE_KEY, id);
+function saveThreads(threads: ThreadMeta[]) {
+  localStorage.setItem(THREADS_KEY, JSON.stringify(threads));
 }
 
-function clearStoredThreadId() {
-  localStorage.removeItem(STORAGE_KEY);
+function loadActiveThreadId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_KEY);
+  } catch {}
+  return null;
 }
 
-export default function App() {
+function saveActiveThreadId(id: string | null) {
+  if (id) localStorage.setItem(ACTIVE_KEY, id);
+  else localStorage.removeItem(ACTIVE_KEY);
+}
+
+function generateTitle(messages: Message[]): string {
+  const firstHuman = messages.find((m) => m.type === "human");
+  if (!firstHuman) return "新对话";
+  const text =
+    typeof firstHuman.content === "string"
+      ? firstHuman.content
+      : JSON.stringify(firstHuman.content);
+  return text.slice(0, 24) + (text.length > 24 ? "…" : "");
+}
+
+/* ------------------------------------------------------------------ */
+/* Inner component: one chat session bound to a single threadId       */
+/* Remounts via key={threadId} whenever the user switches threads.    */
+/* ------------------------------------------------------------------ */
+
+interface ChatSessionProps {
+  threadId: string | null;
+  onThreadCreated: (id: string, title: string) => void;
+  onThreadUpdated: (id: string, title: string) => void;
+}
+
+function ChatSession({ threadId, onThreadCreated, onThreadUpdated }: ChatSessionProps) {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
   >([]);
@@ -33,8 +67,15 @@ export default function App() {
   >({});
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const hasFinalizeEventOccurredRef = useRef(false);
-  const pendingSourcesRef = useRef<{ rag_sources: any[]; web_sources: any[] } | null>(null);
+  const pendingSourcesRef = useRef<{
+    rag_sources: any[];
+    web_sources: any[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const threadCreatedRef = useRef(false);
+  const [resolvedThreadId, setResolvedThreadId] = useState<string | null>(threadId);
+  const lastTitleRef = useRef<string>("");
+
   const thread = useStream<{
     messages: Message[];
     initial_search_query_count: number;
@@ -45,8 +86,14 @@ export default function App() {
       ? "http://localhost:2024"
       : "http://localhost:8123",
     assistantId: "agent",
-    threadId: getStoredThreadId(),
-    onThreadId: (id) => setStoredThreadId(id),
+    threadId,
+    onThreadId: (id) => {
+      setResolvedThreadId(id);
+      if (!threadCreatedRef.current && id) {
+        threadCreatedRef.current = true;
+        onThreadCreated(id, "新对话");
+      }
+    },
     messagesKey: "messages",
     onUpdateEvent: (event: any) => {
       let processedEvent: ProcessedEvent | null = null;
@@ -105,6 +152,7 @@ export default function App() {
     },
   });
 
+  // Auto-scroll
   useEffect(() => {
     if (scrollAreaRef.current) {
       const scrollViewport = scrollAreaRef.current.querySelector(
@@ -116,6 +164,7 @@ export default function App() {
     }
   }, [thread.messages]);
 
+  // Capture finalize + update thread title when first human msg arrives
   useEffect(() => {
     if (
       hasFinalizeEventOccurredRef.current &&
@@ -140,16 +189,24 @@ export default function App() {
     }
   }, [thread.messages, thread.isLoading, processedEventsTimeline]);
 
+  // Update thread title from messages
+  useEffect(() => {
+    const id = resolvedThreadId ?? threadId;
+    if (thread.messages.length > 0 && id) {
+      const title = generateTitle(thread.messages);
+      if (title !== lastTitleRef.current) {
+        lastTitleRef.current = title;
+        onThreadUpdated(id, title);
+      }
+    }
+  }, [thread.messages, resolvedThreadId, threadId]);
+
   const handleSubmit = useCallback(
     (submittedInputValue: string, effort: string, model: string) => {
       if (!submittedInputValue.trim()) return;
       setProcessedEventsTimeline([]);
       hasFinalizeEventOccurredRef.current = false;
 
-      // convert effort to, initial_search_query_count and max_research_loops
-      // low means max 1 loop and 1 query
-      // medium means max 3 loops and 3 queries
-      // high means max 10 loops and 5 queries
       let initial_search_query_count = 0;
       let max_research_loops = 0;
       switch (effort) {
@@ -177,8 +234,8 @@ export default function App() {
       ];
       thread.submit({
         messages: newMessages,
-        initial_search_query_count: initial_search_query_count,
-        max_research_loops: max_research_loops,
+        initial_search_query_count,
+        max_research_loops,
         reasoning_model: model,
       });
     },
@@ -190,57 +247,129 @@ export default function App() {
     window.location.reload();
   }, [thread]);
 
+  return (
+    <div className="flex h-full w-full">
+      <div className="flex-1 overflow-hidden">
+        {thread.messages.length === 0 ? (
+          <WelcomeScreen
+            handleSubmit={handleSubmit}
+            isLoading={thread.isLoading}
+            onCancel={handleCancel}
+          />
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full">
+            <div className="flex flex-col items-center justify-center gap-4">
+              <h1 className="text-2xl text-red-400 font-bold">Error</h1>
+              <p className="text-red-400">{JSON.stringify(error)}</p>
+              <Button
+                variant="destructive"
+                onClick={() => window.location.reload()}
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <ChatMessagesView
+            messages={thread.messages}
+            isLoading={thread.isLoading}
+            scrollAreaRef={scrollAreaRef}
+            onSubmit={handleSubmit}
+            onCancel={handleCancel}
+            liveActivityEvents={processedEventsTimeline}
+            historicalActivities={historicalActivities}
+            messageSources={messageSources}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Outer App: manages sidebar + thread list + active thread switching */
+/* ------------------------------------------------------------------ */
+
+export default function App() {
+  const [threads, setThreads] = useState<ThreadMeta[]>(loadThreads);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(
+    loadActiveThreadId
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
   const handleNewChat = useCallback(() => {
-    clearStoredThreadId();
-    window.location.reload();
+    setActiveThreadId(null);
+    saveActiveThreadId(null);
   }, []);
+
+  const handleSelectThread = useCallback((id: string) => {
+    setActiveThreadId(id);
+    saveActiveThreadId(id);
+  }, []);
+
+  const handleDeleteThread = useCallback(
+    (id: string) => {
+      const next = threads.filter((t) => t.id !== id);
+      setThreads(next);
+      saveThreads(next);
+      if (activeThreadId === id) {
+        setActiveThreadId(null);
+        saveActiveThreadId(null);
+      }
+    },
+    [threads, activeThreadId]
+  );
+
+  const handleThreadCreated = useCallback(
+    (id: string, title: string) => {
+      const now = Date.now();
+      const next: ThreadMeta[] = [
+        { id, title, createdAt: now, updatedAt: now },
+        ...threads.filter((t) => t.id !== id),
+      ];
+      setThreads(next);
+      saveThreads(next);
+      setActiveThreadId(id);
+      saveActiveThreadId(id);
+    },
+    [threads]
+  );
+
+  const handleThreadUpdated = useCallback(
+    (id: string, title: string) => {
+      setThreads((prev) => {
+        const exists = prev.find((t) => t.id === id);
+        if (!exists) return prev;
+        if (exists.title === title && exists.updatedAt === Date.now())
+          return prev;
+        const next = prev.map((t) =>
+          t.id === id ? { ...t, title, updatedAt: Date.now() } : t
+        );
+        saveThreads(next);
+        return next;
+      });
+    },
+    []
+  );
 
   return (
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
-      <main className="h-full w-full max-w-4xl mx-auto relative">
-        <div className="absolute top-4 left-4 z-10">
-          <Button
-            variant="outline"
-            size="sm"
-            className="bg-neutral-700 border-neutral-600 text-neutral-200 hover:bg-neutral-600 hover:text-white"
-            onClick={handleNewChat}
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            New Chat
-          </Button>
-        </div>
-          {thread.messages.length === 0 ? (
-            <WelcomeScreen
-              handleSubmit={handleSubmit}
-              isLoading={thread.isLoading}
-              onCancel={handleCancel}
-            />
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center h-full">
-              <div className="flex flex-col items-center justify-center gap-4">
-                <h1 className="text-2xl text-red-400 font-bold">Error</h1>
-                <p className="text-red-400">{JSON.stringify(error)}</p>
-
-                <Button
-                  variant="destructive"
-                  onClick={() => window.location.reload()}
-                >
-                  Retry
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <ChatMessagesView
-              messages={thread.messages}
-              isLoading={thread.isLoading}
-              scrollAreaRef={scrollAreaRef}
-              onSubmit={handleSubmit}
-              onCancel={handleCancel}
-              liveActivityEvents={processedEventsTimeline}
-              historicalActivities={historicalActivities}
-              messageSources={messageSources}
-            />
-          )}
+      <Sidebar
+        threads={threads}
+        activeThreadId={activeThreadId}
+        isOpen={sidebarOpen}
+        onToggle={() => setSidebarOpen((v) => !v)}
+        onSelect={handleSelectThread}
+        onNewChat={handleNewChat}
+        onDelete={handleDeleteThread}
+      />
+      <main className="flex-1 h-full overflow-hidden relative">
+        <ChatSession
+          key={activeThreadId ?? "__new__"}
+          threadId={activeThreadId}
+          onThreadCreated={handleThreadCreated}
+          onThreadUpdated={handleThreadUpdated}
+        />
       </main>
     </div>
   );
