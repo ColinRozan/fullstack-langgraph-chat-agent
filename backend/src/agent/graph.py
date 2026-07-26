@@ -47,6 +47,7 @@ class SimpleOpenAIChat(BaseChatModel):
     model: str
     temperature: float = 0
     max_retries: int = 2
+    max_tokens: int = 8192
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         api_key = os.getenv("OPENAI_API_KEY")
@@ -58,6 +59,7 @@ class SimpleOpenAIChat(BaseChatModel):
         payload = {
             "model": self.model,
             "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": _convert_role(m), "content": str(m.content)}
                 for m in messages
@@ -100,7 +102,7 @@ def _convert_role(msg: BaseMessage) -> str:
     return "user"
 
 
-def _get_llm(model: str, temperature: float = 0):
+def _get_llm(model: str, temperature: float = 0, max_tokens: int = 8192):
     """Create an LLM instance. Uses OpenAI-compatible API if OPENAI_API_KEY is set,
     otherwise falls back to ChatAnthropic for Ark."""
     if os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL"):
@@ -108,12 +110,14 @@ def _get_llm(model: str, temperature: float = 0):
             model=model,
             temperature=temperature,
             max_retries=2,
+            max_tokens=max_tokens,
         )
     # Fallback to Anthropic / Ark
     return ChatAnthropic(
         model=model,
         temperature=temperature,
         max_retries=2,
+        max_tokens=max_tokens,
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_api_url=os.getenv("ANTHROPIC_BASE_URL"),
     )
