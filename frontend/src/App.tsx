@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 
 const ACTIVE_KEY = "lg-active-thread";
+const THREADS_STORAGE_KEY = "lg-threads";
 
 function loadActiveThreadId(): string | null {
   try {
@@ -25,6 +26,23 @@ function loadActiveThreadId(): string | null {
 function saveActiveThreadId(id: string | null) {
   if (id) localStorage.setItem(ACTIVE_KEY, id);
   else localStorage.removeItem(ACTIVE_KEY);
+}
+
+function loadThreadsFromStorage(): ThreadMeta[] {
+  try {
+    const raw = localStorage.getItem(THREADS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveThreadsToStorage(threads: ThreadMeta[]) {
+  try {
+    localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads));
+  } catch {}
 }
 
 function generateTitle(messages: Message[]): string {
@@ -315,8 +333,9 @@ export default function App() {
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [threadsLoading, setThreadsLoading] = useState(true);
+  const [newChatNonce, setNewChatNonce] = useState(0);
 
-  // Load threads from backend on mount
+  // Load threads from backend on mount (fallback to localStorage)
   useEffect(() => {
     let cancelled = false;
     listThreads()
@@ -329,6 +348,7 @@ export default function App() {
           updatedAt: t.updatedAt ? new Date(t.updatedAt).getTime() : Date.now(),
         }));
         setThreads(loaded);
+        saveThreadsToStorage(loaded);
         // If the saved active thread no longer exists on the backend,
         // clear it so we don’t show a “missing thread” blank state.
         const savedActive = loadActiveThreadId();
@@ -338,7 +358,16 @@ export default function App() {
         }
       })
       .catch((err) => {
-        console.error("Failed to load threads:", err);
+        console.error("Failed to load threads from backend, using localStorage fallback:", err);
+        if (!cancelled) {
+          const fallback = loadThreadsFromStorage();
+          setThreads(fallback);
+          const savedActive = loadActiveThreadId();
+          if (savedActive && !fallback.find((t) => t.id === savedActive)) {
+            setActiveThreadId(null);
+            saveActiveThreadId(null);
+          }
+        }
       })
       .finally(() => {
         if (!cancelled) setThreadsLoading(false);
@@ -351,6 +380,7 @@ export default function App() {
   const handleNewChat = useCallback(() => {
     setActiveThreadId(null);
     saveActiveThreadId(null);
+    setNewChatNonce((n) => n + 1);
   }, []);
 
   const handleSelectThread = useCallback((id: string) => {
@@ -363,10 +393,11 @@ export default function App() {
       try {
         await deleteThreadApi(id);
       } catch (err) {
-        console.error("Failed to delete thread:", err);
+        console.error("Failed to delete thread on backend:", err);
       }
       const next = threads.filter((t) => t.id !== id);
       setThreads(next);
+      saveThreadsToStorage(next);
       if (activeThreadId === id) {
         setActiveThreadId(null);
         saveActiveThreadId(null);
@@ -383,6 +414,7 @@ export default function App() {
         ...threads.filter((t) => t.id !== id),
       ];
       setThreads(next);
+      saveThreadsToStorage(next);
       try {
         await updateThread(id, title);
       } catch (err) {
@@ -401,6 +433,7 @@ export default function App() {
         const next = prev.map((t) =>
           t.id === id ? { ...t, title, updatedAt: Date.now() } : t
         );
+        saveThreadsToStorage(next);
         return next;
       });
       try {
@@ -426,7 +459,7 @@ export default function App() {
       />
       <main className="flex-1 h-full overflow-hidden relative">
         <ChatSession
-          key={activeThreadId ?? "__new__"}
+          key={`${activeThreadId ?? "__new__"}-${newChatNonce}`}
           threadId={activeThreadId}
           threadTitle={threads.find((t) => t.id === activeThreadId)?.title}
           onThreadCreated={handleThreadCreated}

@@ -1,6 +1,4 @@
-const API_BASE = import.meta.env.DEV
-  ? "http://localhost:2024"
-  : "http://localhost:8123";
+const API_BASE = import.meta.env.DEV ? "" : "http://localhost:8123";
 
 export interface ThreadMeta {
   id: string;
