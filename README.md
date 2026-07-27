@@ -2,7 +2,11 @@
 
 A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a modern **React** frontend. The agent performs comprehensive research on your queries by dynamically generating search terms, querying the web via DuckDuckGo (with SearXNG fallback), retrieving documents from a local knowledge base, reflecting on results to identify knowledge gaps, and iteratively refining its search until it delivers a well-supported answer with inline citations.
 
-<img src="./app.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
+<img src="./1.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
+
+<img src="./2.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
+
+<img src="./3.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
 
 ## Features
 
@@ -188,7 +192,7 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 
 ### Agent Workflow
 
-<img src="./agent.png" title="Agent Flow" alt="Agent Flow" width="50%">
+<img src="./agent.png" title="Agent Flow" alt="Agent Flow" width="100%">
 
 1. **Generate Queries:** Based on user input, the LLM creates optimized search queries.
 2. **Parallel Research:** Spawns parallel `web_research` nodes (one per query) **and** a `rag_retrieve` node simultaneously.

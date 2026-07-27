@@ -277,23 +277,22 @@ function ChatSession({
   }, [thread.messages, isSwitching]);
 
   const hasMessages = thread.messages.length > 0;
-  const isOverallLoading = thread.isLoading || isSwitching;
 
   return (
     <div className="flex h-full w-full">
       <div className="flex-1 overflow-hidden">
-        {!hasMessages && !isOverallLoading && threadId == null ? (
+        {!hasMessages && !thread.isLoading && threadId == null ? (
           <WelcomeScreen
             handleSubmit={handleSubmit}
             isLoading={thread.isLoading}
             onCancel={handleCancel}
           />
-        ) : !hasMessages && isOverallLoading ? (
+        ) : !hasMessages && !thread.isLoading && isSwitching ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <Loader2 className="h-8 w-8 animate-spin text-neutral-400" />
             <span className="text-neutral-400 text-sm">正在加载对话…</span>
           </div>
-        ) : !hasMessages && threadId != null ? (
+        ) : !hasMessages && !thread.isLoading && threadId != null ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <span className="text-neutral-400 text-sm">此对话暂无消息。后端数据可能已丢失（开发模式为内存存储）。</span>
             <Button
@@ -351,15 +350,20 @@ export default function App() {
     let cancelled = false;
     listThreads()
       .then((data) => {
-        if (!cancelled) {
-          setThreads(
-            data.map((t) => ({
-              id: t.id,
-              title: t.title,
-              createdAt: t.createdAt ? new Date(t.createdAt).getTime() : Date.now(),
-              updatedAt: t.updatedAt ? new Date(t.updatedAt).getTime() : Date.now(),
-            }))
-          );
+        if (cancelled) return;
+        const loaded = data.map((t) => ({
+          id: t.id,
+          title: t.title,
+          createdAt: t.createdAt ? new Date(t.createdAt).getTime() : Date.now(),
+          updatedAt: t.updatedAt ? new Date(t.updatedAt).getTime() : Date.now(),
+        }));
+        setThreads(loaded);
+        // If the saved active thread no longer exists on the backend,
+        // clear it so we don’t show a “missing thread” blank state.
+        const savedActive = loadActiveThreadId();
+        if (savedActive && !loaded.find((t) => t.id === savedActive)) {
+          setActiveThreadId(null);
+          saveActiveThreadId(null);
         }
       })
       .catch((err) => {

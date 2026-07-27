@@ -794,8 +794,7 @@ builder.add_conditional_edges(
 # Finalize the answer
 builder.add_edge("finalize_answer", END)
 
-# Compile with PostgresSaver when available, otherwise MemorySaver
+# Compile without custom checkpointer — langgraph-api handles persistence
 graph = builder.compile(
     name="pro-search-agent",
-    checkpointer=_get_checkpointer(),
 )
