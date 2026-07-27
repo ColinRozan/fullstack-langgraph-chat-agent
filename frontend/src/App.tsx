@@ -74,8 +74,6 @@ function ChatSession({
   const threadCreatedRef = useRef(false);
   const [resolvedThreadId, setResolvedThreadId] = useState<string | null>(threadId);
   const lastTitleRef = useRef<string>("");
-  const prevThreadIdRef = useRef<string | null>(threadId);
-  const [isSwitching, setIsSwitching] = useState(false);
 
   const thread = useStream<{
     messages: Message[];
@@ -247,35 +245,6 @@ function ChatSession({
     thread.stop();
   }, [thread]);
 
-  // Detect thread switch and reset local state
-  useEffect(() => {
-    if (prevThreadIdRef.current !== threadId) {
-      prevThreadIdRef.current = threadId;
-      // Do NOT stop the stream — allow it to continue in the background.
-      setProcessedEventsTimeline([]);
-      setHistoricalActivities({});
-      setMessageSources({});
-      setError(null);
-      setResolvedThreadId(threadId);
-      hasFinalizeEventOccurredRef.current = false;
-      pendingSourcesRef.current = null;
-      threadCreatedRef.current = false;
-      lastTitleRef.current = "";
-      setIsSwitching(true);
-    }
-  }, [threadId]);
-
-  // Clear switching flag once messages arrive or history fetch settles
-  useEffect(() => {
-    if (!isSwitching) return;
-    if (thread.messages.length > 0) {
-      setIsSwitching(false);
-      return;
-    }
-    const timer = setTimeout(() => setIsSwitching(false), 1000);
-    return () => clearTimeout(timer);
-  }, [thread.messages, isSwitching]);
-
   const hasMessages = thread.messages.length > 0;
 
   return (
@@ -287,14 +256,16 @@ function ChatSession({
             isLoading={thread.isLoading}
             onCancel={handleCancel}
           />
-        ) : !hasMessages && !thread.isLoading && isSwitching ? (
+        ) : !hasMessages && thread.isLoading ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <Loader2 className="h-8 w-8 animate-spin text-neutral-400" />
             <span className="text-neutral-400 text-sm">正在加载对话…</span>
           </div>
-        ) : !hasMessages && !thread.isLoading && threadId != null ? (
+        ) : !hasMessages && threadId != null ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
-            <span className="text-neutral-400 text-sm">此对话暂无消息。后端数据可能已丢失（开发模式为内存存储）。</span>
+            <span className="text-neutral-400 text-sm">
+              此对话暂无消息。后端数据可能已丢失（开发模式为内存存储）。
+            </span>
             <Button
               variant="outline"
               onClick={() => window.location.reload()}
@@ -340,7 +311,7 @@ function ChatSession({
 export default function App() {
   const [threads, setThreads] = useState<ThreadMeta[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(
-    loadActiveThreadId
+    loadActiveThreadId()
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [threadsLoading, setThreadsLoading] = useState(true);
@@ -455,6 +426,7 @@ export default function App() {
       />
       <main className="flex-1 h-full overflow-hidden relative">
         <ChatSession
+          key={activeThreadId ?? "__new__"}
           threadId={activeThreadId}
           threadTitle={threads.find((t) => t.id === activeThreadId)?.title}
           onThreadCreated={handleThreadCreated}

@@ -19,6 +19,9 @@ RUN npm run build
 # Stage 2: Python Backend
 FROM docker.io/langchain/langgraph-api:3.11
 
+# Patch missing feature-flag required by the bundled langgraph_runtime_postgres
+RUN echo "PREFER_GRPC_CHECKPOINTER = False" >> /usr/local/lib/python3.11/site-packages/langgraph_api/feature_flags.py
+
 # -- Copy built frontend from builder stage --
 # The app.py expects the frontend build to be at ../frontend/dist relative to its own location.
 # If app.py is at /deps/backend/src/agent/app.py, then ../frontend/dist resolves to /deps/frontend/dist.
