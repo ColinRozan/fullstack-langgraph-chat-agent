@@ -16,7 +16,7 @@ export default defineConfig({
     proxy: {
       // Proxy API requests to the LangGraph dev server
       "/api": {
-        target: "http://localhost:2024",
+        target: "http://localhost:8123",
         changeOrigin: true,
       },
     },

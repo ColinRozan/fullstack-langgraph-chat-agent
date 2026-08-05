@@ -15,9 +15,10 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 - 🗂️ **Multi-Thread Memory** — Sidebar shows all historical conversations. Each conversation is an independent thread with full state persistence; switch threads without losing context.
 - 🐘 **PostgreSQL Persistence** — Thread metadata, session snapshots, and long-term memory are persisted to PostgreSQL. LangGraph checkpointing uses `PostgresSaver` (falls back to `MemorySaver` when the DB is unavailable).
 - 🧠 **Cross-Session Long-Term Memory** — Automatically stores research topics and answer previews in a namespace key-value store across conversations.
+- 🗜️ **Automatic Memory Compression** — When a memory namespace exceeds a configurable threshold, oldest entries are automatically summarized and compressed to prevent unbounded growth.
 - 🔍 **Dynamic Query Generation** — LLM generates diverse, targeted search queries from your question.
 - 🌐 **Multi-Backend Web Search** — DuckDuckGo primary search with automatic SearXNG fallback.
-- 📚 **RAG Knowledge Base** — Local document retrieval powered by Chroma vector store; supports PDF, TXT, and Markdown.
+- 📚 **Hybrid RAG Knowledge Base** — Local document retrieval with hybrid search (BM25 keyword + vector semantic + cross-encoder reranking) for significantly better recall; supports PDF, TXT, and Markdown.
 - 🤔 **Reflective Reasoning** — Analyzes gathered information to identify gaps and decides whether to continue researching.
 - 📄 **Inline Citations** — Distinguishes web sources `[🌐 Title](URL)` from knowledge base sources `[📄 source: filename.pdf]`.
 - 🎯 **Research Depth Control** — Choose between Low, Medium, and High effort modes to adjust query count and max reflection loops.
@@ -55,7 +56,9 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 │   │   ├── state.py             # TypedDict state definitions
 │   │   ├── prompts.py           # LLM prompt templates
 │   │   ├── configuration.py     # Agent configuration schema
-│   │   ├── knowledge_base.py    # RAG retrieval with Chroma vector store
+│   │   ├── knowledge_base.py    # RAG retrieval with Chroma vector store + hybrid search support
+│   │   ├── hybrid_retriever.py  # Hybrid retriever: BM25 + vector fusion + cross-encoder rerank
+│   │   ├── memory_compression.py # Automatic memory compression when thresholds are exceeded
 │   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs & tool/MCP schemas
 │   │   ├── mcp_client.py        # MCP (Model Context Protocol) client — reserved capability
 │   │   ├── persistence.py       # PostgreSQL persistence layer (thread metadata, memory, checkpointer)
@@ -217,6 +220,14 @@ The frontend fetches the thread list from `/api/threads` on mount and synchroniz
 - Clicking a sidebar item switches threads without remounting the chat session (streams continue in the background).
 - Deleting a thread removes both its metadata and session snapshot from PostgreSQL.
 
+#### Automatic Memory Compression
+
+To prevent long-term memory from growing unbounded, the system monitors the `research_topics` namespace after each answer:
+
+- **Threshold-driven** — When the number of entries exceeds `memory_compression_threshold` (default 10), the oldest `memory_compression_batch_size` entries are fetched and passed to the LLM for summarization.
+- **Compressed snapshot** — The LLM produces a concise summary, which is stored under a `_compressed_` key. The original raw entries are then deleted in a single batch operation.
+- **Non-critical** — If compression fails (e.g., LLM timeout), the error is logged and the main research flow continues unaffected.
+
 > **Development Note:** `langgraph dev` still uses an in-memory runtime by default. To enable PostgreSQL persistence during local development, set `POSTGRES_URI` and install the new dependencies (`pip install -e .`).
 
 ### LLM Provider Logic
@@ -236,6 +247,7 @@ The built-in **Retrieval-Augmented Generation (RAG)** system allows the agent to
 
 - **Vector Store:** [Chroma](https://www.trychroma.com/) with persistence.
 - **Embedding Model:** `BAAI/bge-small-zh-v1.5` (ONNX-based, optimized for Chinese semantic retrieval). Falls back to Chroma's default `all-MiniLM-L6-v2` if loading fails.
+- **Hybrid Search** *(new)* — Combines BM25 keyword search with vector semantic search, then fuses results via Reciprocal Rank Fusion (RRF). A cross-encoder reranker further boosts precision by reordering candidates by relevance. All components gracefully degrade: if BM25 or reranking fails, the system falls back to pure vector search.
 - **Document Loading:** Automatically loads and indexes documents from `backend/data/docs/` on first startup.
 - **Supported Formats:** PDF (via PyPDFLoader), TXT, Markdown (`.md`, `.markdown`).
 - **Text Splitting:** Recursive character splitter with 1000-character chunks and 200-character overlap.
@@ -313,8 +325,6 @@ Agent behavior can be customized via environment variables or runtime config:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| Variable | Default | Description |
-|----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | — | API key for Anthropic-compatible LLM provider |
 | `ANTHROPIC_BASE_URL` | — | Base URL for Anthropic-compatible API |
 | `OPENAI_API_KEY` | — | API key for OpenAI-compatible provider |
@@ -333,6 +343,13 @@ Agent behavior can be customized via environment variables or runtime config:
 | `mcp_enabled` | `false` | Enable MCP (Model Context Protocol) tool server integration |
 | `mcp_servers` | `""` | JSON-encoded list of MCP server configurations |
 | `memory_enabled` | `true` | Enable cross-session long-term memory storage |
+| `memory_compression_threshold` | `10` | Number of memory entries in a namespace before automatic compression triggers |
+| `memory_compression_batch_size` | `10` | Number of oldest entries to compress in one batch |
+| `hybrid_search_enabled` | `true` | Enable hybrid search (BM25 + vector) for RAG retrieval |
+| `bm25_enabled` | `true` | Enable BM25 keyword search in hybrid retrieval |
+| `rerank_enabled` | `true` | Enable cross-encoder reranking after hybrid retrieval |
+| `hybrid_search_top_k` | `10` | Initial top-k candidates to retrieve from each search modality before fusion |
+| `rerank_top_k` | `5` | Final top-k documents to return after reranking |
 
 ### Research Effort Levels
 
