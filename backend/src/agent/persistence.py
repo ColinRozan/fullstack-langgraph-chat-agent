@@ -246,6 +246,21 @@ def load_session_state(thread_id: str) -> Optional[Dict[str, Any]]:
 # Long-term memory store (namespace → key → value)
 # ---------------------------------------------------------------------------
 
+def count_memory(namespace: str) -> int:
+    """Return the number of entries in a namespace (excluding compressed keys)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM agent_memory
+                WHERE namespace = %s AND key NOT LIKE %s
+                """,
+                (namespace, "_compressed_%"),
+            )
+            row = cur.fetchone()
+            return row[0] if row else 0
+
+
 def put_memory(namespace: str, key: str, value: Any) -> None:
     """Upsert a value into the long-term memory store."""
     with get_connection() as conn:
@@ -275,14 +290,30 @@ def get_memory(namespace: str, key: str) -> Any:
             return row[0]
 
 
-def list_memory_namespace(namespace: str) -> Dict[str, Any]:
-    """Return all key-value pairs for a given namespace."""
+def list_memory_namespace(namespace: str, limit: int | None = None, order_by: str = "created_at ASC") -> Dict[str, Any]:
+    """Return key-value pairs for a given namespace, optionally limited and ordered.
+
+    Args:
+        namespace: The memory namespace to query.
+        limit: Maximum number of entries to return. None for unlimited.
+        order_by: SQL ORDER BY clause (e.g. "created_at ASC" or "created_at DESC").
+    """
+    # Whitelist allowed order_by values to prevent SQL injection
+    allowed_orders = {"created_at ASC", "created_at DESC", "updated_at ASC", "updated_at DESC", "key ASC", "key DESC"}
+    safe_order = order_by if order_by in allowed_orders else "created_at ASC"
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT key, value FROM agent_memory WHERE namespace = %s",
-                (namespace,),
-            )
+            sql = f"""
+                SELECT key, value FROM agent_memory
+                WHERE namespace = %s
+                ORDER BY {safe_order}
+            """
+            params: list = [namespace]
+            if limit is not None:
+                sql += " LIMIT %s"
+                params.append(limit)
+            cur.execute(sql, params)
             return {r[0]: r[1] for r in cur.fetchall()}
 
 
@@ -294,6 +325,24 @@ def delete_memory(namespace: str, key: str) -> None:
                 "DELETE FROM agent_memory WHERE namespace = %s AND key = %s",
                 (namespace, key),
             )
+
+
+def delete_memory_batch(namespace: str, keys: List[str]) -> int:
+    """Delete multiple memory entries in a single query.
+
+    Returns:
+        Number of rows deleted.
+    """
+    if not keys:
+        return 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # Use ANY with array for efficient batch delete
+            cur.execute(
+                "DELETE FROM agent_memory WHERE namespace = %s AND key = ANY(%s)",
+                (namespace, keys),
+            )
+            return cur.rowcount
 
 
 # ---------------------------------------------------------------------------

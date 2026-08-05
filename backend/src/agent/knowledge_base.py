@@ -146,8 +146,38 @@ def get_vectorstore(
     return _build_vectorstore(docs_dir, chroma_dir, embeddings)
 
 
-def retrieve_documents(query: str, top_k: int = 5) -> List[Document]:
-    """Retrieve the top-k most relevant documents for the given query."""
+def retrieve_documents(
+    query: str,
+    top_k: int = 5,
+    use_hybrid: bool = False,
+    enable_bm25: bool = True,
+    enable_rerank: bool = True,
+    hybrid_top_k: int = 10,
+    llm=None,
+) -> List[Document]:
+    """Retrieve the top-k most relevant documents for the given query.
+
+    Args:
+        query: The search query.
+        top_k: Number of final documents to return.
+        use_hybrid: Whether to use hybrid search (BM25 + vector + rerank).
+        enable_bm25: Whether to enable BM25 in hybrid mode.
+        enable_rerank: Whether to enable reranking in hybrid mode.
+        hybrid_top_k: Number of candidates to retrieve per modality before fusion.
+        llm: Optional LLM for LLM-based rerank fallback.
+    """
+    if use_hybrid:
+        from agent.hybrid_retriever import get_hybrid_retriever
+
+        retriever = get_hybrid_retriever(
+            top_k=hybrid_top_k,
+            rerank_top_k=top_k,
+            enable_bm25=enable_bm25,
+            enable_rerank=enable_rerank,
+            llm=llm,
+        )
+        return retriever.retrieve(query)
+
     vectorstore = get_vectorstore()
     try:
         return vectorstore.similarity_search(query, k=top_k)

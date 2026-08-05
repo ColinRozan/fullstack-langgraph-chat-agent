@@ -109,6 +109,41 @@ class Configuration(BaseModel):
         metadata={"description": "Whether to enable long-term memory storage across sessions."},
     )
 
+    memory_compression_threshold: int = Field(
+        default=10,
+        metadata={"description": "Number of memory entries in a namespace before automatic compression triggers."},
+    )
+
+    memory_compression_batch_size: int = Field(
+        default=10,
+        metadata={"description": "Number of oldest entries to compress in one batch."},
+    )
+
+    hybrid_search_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable hybrid search (BM25 + vector) for RAG retrieval."},
+    )
+
+    bm25_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable BM25 keyword search in hybrid retrieval."},
+    )
+
+    rerank_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable cross-encoder reranking after hybrid retrieval."},
+    )
+
+    hybrid_search_top_k: int = Field(
+        default=10,
+        metadata={"description": "Initial top-k candidates to retrieve from each search modality before fusion."},
+    )
+
+    rerank_top_k: int = Field(
+        default=5,
+        metadata={"description": "Final top-k documents to return after reranking."},
+    )
+
     @classmethod
     def from_runnable_config(
         cls, config: Optional[RunnableConfig] = None

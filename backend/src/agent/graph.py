@@ -340,7 +340,14 @@ def rag_retrieve(state: RagRetrieveState, config: RunnableConfig) -> OverallStat
         return {"rag_documents": []}
 
     try:
-        docs = retrieve_documents(state["query"], top_k=configurable.rag_top_k)
+        docs = retrieve_documents(
+            state["query"],
+            top_k=configurable.rag_top_k,
+            use_hybrid=configurable.hybrid_search_enabled,
+            enable_bm25=configurable.bm25_enabled,
+            enable_rerank=configurable.rerank_enabled,
+            hybrid_top_k=configurable.hybrid_search_top_k,
+        )
         return {"rag_documents": docs}
     except Exception:
         # Gracefully degrade if RAG fails
@@ -716,9 +723,10 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
     # -----------------------------------------------------------------------
     try:
         thread_id = config.get("configurable", {}).get("thread_id") if config else None
+        research_topic = get_research_topic(state["messages"])
+
         if thread_id:
             # Update thread title from the first human message
-            research_topic = get_research_topic(state["messages"])
             title = research_topic[:60] + "..." if len(research_topic) > 60 else research_topic
             persistence.upsert_thread(thread_id, title)
 
@@ -746,6 +754,20 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
                     "timestamp": current_date,
                 },
             )
+
+            # Trigger automatic memory compression if threshold reached
+            try:
+                from agent.memory_compression import maybe_compress_memory
+
+                llm = _get_llm(configurable.answer_model, temperature=0)
+                maybe_compress_memory(
+                    "research_topics",
+                    llm=llm,
+                    threshold=configurable.memory_compression_threshold,
+                    batch_size=configurable.memory_compression_batch_size,
+                )
+            except Exception as compress_err:
+                print(f"[finalize_answer] Memory compression failed (non-critical): {compress_err}")
     except Exception as e:
         print(f"[finalize_answer] Persistence failed (non-critical): {e}")
 
