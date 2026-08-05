@@ -2,11 +2,11 @@
 
 A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a modern **React** frontend. The agent performs comprehensive research on your queries by dynamically generating search terms, querying the web via DuckDuckGo (with SearXNG fallback), retrieving documents from a local knowledge base, reflecting on results to identify knowledge gaps, and iteratively refining its search until it delivers a well-supported answer with inline citations.
 
-<img src="./1.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
-
 <img src="./2.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
 
 <img src="./3.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
+
+<img src="./4.png" title="Fullstack LangGraph" alt="Fullstack LangGraph" width="90%">
 
 ## Features
 
