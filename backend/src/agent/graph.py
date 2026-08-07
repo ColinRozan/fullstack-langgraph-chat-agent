@@ -1,12 +1,13 @@
+"""Core LangGraph agent definition with production hardening.
+
+Includes structured logging, input sanitisation, token-cost tracking,
+exponential-backoff retries, and observability metrics.
+"""
+
 import json
 import os
 import re
 
-from agent.tools_and_schemas import (
-    SearchQueryList,
-    Reflection,
-    ToolCallResult,
-)
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Send
@@ -20,6 +21,11 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from duckduckgo_search import DDGS
 import requests
 
+from agent.tools_and_schemas import (
+    SearchQueryList,
+    Reflection,
+    ToolCallResult,
+)
 from agent.state import (
     OverallState,
     QueryGenerationState,
@@ -44,8 +50,21 @@ from agent.utils import (
 from agent.knowledge_base import retrieve_documents
 from agent.mcp_client import create_mcp_client, MCPClient
 from agent import persistence
+from agent.observability import (
+    get_logger,
+    set_trace_id,
+    get_trace_id,
+    SEARCH_REQUESTS_TOTAL,
+    RAG_RETRIEVAL_DURATION,
+    RESEARCH_LOOP_COUNT,
+)
+from agent.security import sanitize_input, detect_pii, check_prompt_injection
+from agent.cost_tracking import record_llm_usage
+from agent.retry_config import retry_with_backoff, with_circuit_breaker
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Checkpointer initialisation (lazy so import-time DB errors are avoided)
@@ -54,7 +73,11 @@ _checkpointer = None
 
 
 def _get_checkpointer():
-    """Return a PostgresSaver if available, otherwise MemorySaver."""
+    """Return a PostgresSaver if available.
+
+    In production we **do not** fall back to MemorySaver silently because that
+    would lose data.  Only fall back when ``DB_FALLBACK_ENABLED`` is true.
+    """
     global _checkpointer
     if _checkpointer is not None:
         return _checkpointer
@@ -62,22 +85,39 @@ def _get_checkpointer():
         saver = persistence.get_postgres_saver()
         if saver is not None:
             _checkpointer = saver
+            logger.info("checkpointer_postgres_ready")
             return _checkpointer
     except Exception as e:
-        print(f"[graph] PostgresSaver unavailable: {e}")
-    from langgraph.checkpoint.memory import MemorySaver
+        logger.warning("checkpointer_postgres_unavailable", error=str(e))
 
-    _checkpointer = MemorySaver()
-    print("[graph] Falling back to MemorySaver")
-    return _checkpointer
+    if os.environ.get("DB_FALLBACK_ENABLED", "false").lower() in ("1", "true", "yes"):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        _checkpointer = MemorySaver()
+        logger.warning("checkpointer_memory_fallback")
+        return _checkpointer
+
+    raise RuntimeError(
+        "PostgreSQL checkpointer is unavailable and DB_FALLBACK_ENABLED is false."
+    )
+
+
+# ---------------------------------------------------------------------------
+# LLM wrappers with retry, circuit breaker, and cost tracking
+# ---------------------------------------------------------------------------
 
 class SimpleOpenAIChat(BaseChatModel):
-    """Lightweight OpenAI-compatible chat model using requests."""
+    """Lightweight OpenAI-compatible chat model using requests.
+
+    Includes production retries, configurable timeout, and automatic token
+    / cost telemetry.
+    """
 
     model: str
     temperature: float = 0
     max_retries: int = 2
     max_tokens: int = 8192
+    timeout: int = 60
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         api_key = os.getenv("OPENAI_API_KEY")
@@ -104,7 +144,7 @@ class SimpleOpenAIChat(BaseChatModel):
                     f"{base_url}/chat/completions",
                     headers=headers,
                     json=payload,
-                    timeout=120,
+                    timeout=self.timeout,
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -113,6 +153,12 @@ class SimpleOpenAIChat(BaseChatModel):
                 gen = ChatGeneration(message=msg)
                 return ChatResult(generations=[gen])
             except Exception as e:
+                logger.warning(
+                    "openai_api_call_failed",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error=str(e),
+                )
                 if attempt == self.max_retries:
                     raise RuntimeError(f"OpenAI API call failed: {e}") from e
 
@@ -133,14 +179,19 @@ def _convert_role(msg: BaseMessage) -> str:
 
 
 def _get_llm(model: str, temperature: float = 0, max_tokens: int = 8192):
-    """Create an LLM instance. Uses OpenAI-compatible API if OPENAI_API_KEY is set,
-    otherwise falls back to ChatAnthropic for Ark."""
+    """Create an LLM instance with production hardening.
+
+    Uses OpenAI-compatible API if OPENAI_API_KEY is set, otherwise falls back
+    to ChatAnthropic for Ark.
+    """
+    timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
     if os.getenv("OPENAI_API_KEY") and os.getenv("OPENAI_BASE_URL"):
         return SimpleOpenAIChat(
             model=model,
             temperature=temperature,
             max_retries=2,
             max_tokens=max_tokens,
+            timeout=timeout,
         )
     # Fallback to Anthropic / Ark
     return ChatAnthropic(
@@ -150,16 +201,12 @@ def _get_llm(model: str, temperature: float = 0, max_tokens: int = 8192):
         max_tokens=max_tokens,
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_api_url=os.getenv("ANTHROPIC_BASE_URL"),
+        timeout=timeout,
     )
 
 
 def _extract_text(content) -> str:
-    """Normalize LLM message content to a plain string.
-
-    Anthropic-compatible APIs may return content as a list of dicts
-    (e.g. [{"type": "text", "text": "..."}]). This helper flattens
-    everything into a single string.
-    """
+    """Normalize LLM message content to a plain string."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -174,16 +221,10 @@ def _extract_text(content) -> str:
 
 
 def _extract_json(text: str) -> dict:
-    """Extract JSON object from LLM output text.
-
-    Tries to find a JSON block inside triple backticks first,
-    then falls back to the first `{...}` substring.
-    """
-    # Try fenced code block
+    """Extract JSON object from LLM output text."""
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         return json.loads(m.group(1))
-    # Try raw JSON object
     m = re.search(r"(\{.*\})", text, re.DOTALL)
     if m:
         return json.loads(m.group(1))
@@ -195,23 +236,18 @@ def _extract_json(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _is_tool_calling_supported(llm: BaseChatModel) -> bool:
-    """Check whether the LLM instance supports native tool-calling."""
     return hasattr(llm, "bind_tools") and hasattr(llm, "with_structured_output")
 
 
 def _create_structured_llm(llm: BaseChatModel, schema, use_tool_calling: bool = False):
-    """Return a runnable that produces *schema* instances.
-
-    When *use_tool_calling* is ``True`` and the LLM supports it, this uses
-    LangChain's ``with_structured_output`` (which internally uses the model's
-    native tool-calling / JSON-mode). Otherwise it falls back to plain text
-    invocation plus manual JSON extraction — the original behaviour.
-    """
     if use_tool_calling and _is_tool_calling_supported(llm):
         try:
             return llm.with_structured_output(schema, include_raw=False)
         except Exception as e:
-            print(f"[tool-calling] with_structured_output failed: {e}. Falling back to manual JSON parsing.")
+            logger.warning(
+                "structured_output_fallback",
+                error=str(e),
+            )
     return _ManualJsonParser(llm, schema)
 
 
@@ -229,7 +265,11 @@ class _ManualJsonParser:
             parsed = _extract_json(raw_text)
             return self.schema(**parsed)
         except Exception as e:
-            print(f"[_ManualJsonParser] Failed to parse JSON: {e}. Raw output:\n{raw_text}")
+            logger.error(
+                "json_parse_failed",
+                error=str(e),
+                raw_preview=raw_text[:200],
+            )
             raise
 
 
@@ -241,11 +281,6 @@ _mcp_client_singleton: MCPClient | None = None
 
 
 def _get_or_create_mcp_client(configurable: Configuration) -> MCPClient | None:
-    """Lazy-initialise the MCP client from configuration.
-
-    Returns ``None`` if MCP is disabled or no servers are configured.
-    """
-    global _mcp_client_singleton
     if not configurable.mcp_enabled:
         return None
     if _mcp_client_singleton is None and configurable.mcp_servers:
@@ -253,68 +288,73 @@ def _get_or_create_mcp_client(configurable: Configuration) -> MCPClient | None:
     return _mcp_client_singleton
 
 
+# ---------------------------------------------------------------------------
 # Nodes
+# ---------------------------------------------------------------------------
+
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
-    """LangGraph node that generates search queries based on the User's question.
-
-    Uses Claude to create optimized search queries for web research based on
-    the User's question.
-
-    Args:
-        state: Current graph state containing the User's question
-        config: Configuration for the runnable, including LLM provider settings
-
-    Returns:
-        Dictionary with state update, including search_query key containing the generated queries
-    """
+    """LangGraph node that generates search queries based on the User's question."""
     configurable = Configuration.from_runnable_config(config)
 
-    # check for custom initial search query count
+    # Propagate trace ID through LangGraph config metadata
+    trace_id = config.get("metadata", {}).get("trace_id") if config else None
+    if trace_id:
+        set_trace_id(trace_id)
+
+    # Input sanitisation
+    raw_topic = get_research_topic(state["messages"])
+    topic, pii_types = detect_pii(sanitize_input(raw_topic, max_length=configurable.input_max_length))
+    is_injection, injection_kws = check_prompt_injection(raw_topic)
+    if pii_types:
+        logger.info("pii_detected_in_input", types=pii_types)
+    if is_injection:
+        logger.warning("prompt_injection_detected", keywords=injection_kws)
+
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init LLM
     llm = _get_llm(configurable.query_generator_model, temperature=1.0)
 
-    # Format the prompt
     current_date = get_current_date()
     formatted_prompt = query_writer_instructions.format(
         current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
+        research_topic=topic,
         number_queries=state["initial_search_query_count"],
     )
 
-    # Generate the search queries — use native tool-calling when enabled
     structured_llm = _create_structured_llm(
         llm, SearchQueryList, use_tool_calling=configurable.tool_calling_enabled
     )
     try:
         result = structured_llm.invoke(formatted_prompt)
     except Exception as e:
-        print(f"[generate_query] Structured generation failed: {e}. Falling back to single query.")
+        logger.error("generate_query_failed", error=str(e))
         result = SearchQueryList(
-            query=[get_research_topic(state["messages"])],
+            query=[topic],
             rationale="Fallback single query due to generation failure.",
+        )
+
+    # Cost tracking
+    if configurable.cost_tracking_enabled:
+        record_llm_usage(
+            model=configurable.query_generator_model,
+            stage="generate_query",
+            prompt_text=formatted_prompt,
+            completion_text=str(result.query),
         )
 
     return {
         "search_query": result.query,
-        "research_topic": get_research_topic(state["messages"]),
+        "research_topic": topic,
     }
 
 
 def continue_to_research(state: QueryGenerationState):
-    """LangGraph node that sends the search queries to the web research node
-    and the user's research topic to the RAG retrieval node.
-
-    This spawns parallel web research nodes (one per query) and a single
-    RAG retrieval node.
-    """
+    """Spawn parallel web research nodes and a single RAG retrieval node."""
     sends = [
         Send("web_research", {"search_query": search_query, "id": int(idx)})
         for idx, search_query in enumerate(state["search_query"])
     ]
-    # Add RAG retrieval in parallel if enabled
     if state.get("research_topic"):
         sends.append(
             Send("rag_retrieve", {"query": state["research_topic"], "id": "rag"})
@@ -323,22 +363,13 @@ def continue_to_research(state: QueryGenerationState):
 
 
 def rag_retrieve(state: RagRetrieveState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that retrieves relevant documents from the local knowledge base.
-
-    Uses Chroma vector store to find the top-k most relevant document chunks
-    for the user's query.
-
-    Args:
-        state: Current graph state containing the research topic/query
-        config: Configuration for the runnable, including RAG settings
-
-    Returns:
-        Dictionary with state update, including rag_documents
-    """
+    """Retrieve relevant documents from the local knowledge base."""
     configurable = Configuration.from_runnable_config(config)
     if not configurable.rag_enabled:
         return {"rag_documents": []}
 
+    import time
+    start = time.perf_counter()
     try:
         docs = retrieve_documents(
             state["query"],
@@ -348,9 +379,11 @@ def rag_retrieve(state: RagRetrieveState, config: RunnableConfig) -> OverallStat
             enable_rerank=configurable.rerank_enabled,
             hybrid_top_k=configurable.hybrid_search_top_k,
         )
+        RAG_RETRIEVAL_DURATION.observe(time.perf_counter() - start)
         return {"rag_documents": docs}
-    except Exception:
-        # Gracefully degrade if RAG fails
+    except Exception as exc:
+        logger.warning("rag_retrieval_failed", error=str(exc))
+        RAG_RETRIEVAL_DURATION.observe(time.perf_counter() - start)
         return {"rag_documents": []}
 
 
@@ -366,7 +399,7 @@ def _searx_search(query: str, max_results: int = 5):
             resp = requests.get(
                 f"{base}/search",
                 params={"q": query, "format": "json", "engines": "bing,google"},
-                timeout=10,
+                timeout=15,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
             if resp.status_code == 200:
@@ -382,39 +415,48 @@ def _searx_search(query: str, max_results: int = 5):
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using DuckDuckGo / SearX and LLM.
-
-    Executes a web search, then uses LLM to synthesize the search results
-    into a coherent summary with source citations.
-
-    Args:
-        state: Current graph state containing the search query and research loop count
-        config: Configuration for the runnable, including search API settings
-
-    Returns:
-        Dictionary with state update, including sources_gathered, research_loop_count, and web_research_results
-    """
+    """Perform web research using DuckDuckGo / SearX and LLM."""
     configurable = Configuration.from_runnable_config(config)
     query = state["search_query"]
 
     # Perform web search: try DuckDuckGo with retries across backends
     search_results = []
-    backends = ["api", "html"]  # api/auto is generally more reliable; html as fallback
+    backends = ["api", "html"]
     for backend in backends:
         try:
             with DDGS() as ddgs:
                 results = ddgs.text(query, max_results=5, backend=backend)
                 search_results = list(results)
-                print(f"[Web Research] DDGS({backend}) returned {len(search_results)} results for '{query}'")
+                logger.info(
+                    "web_search_ddgs",
+                    backend=backend,
+                    result_count=len(search_results),
+                    query=query,
+                )
+                SEARCH_REQUESTS_TOTAL.labels(provider=f"ddgs_{backend}", status="success").inc()
                 if search_results:
                     break
         except Exception as e:
-            print(f"[Web Research] DDGS({backend}) failed for '{query}': {e}")
+            logger.warning(
+                "web_search_ddgs_failed",
+                backend=backend,
+                query=query,
+                error=str(e),
+            )
+            SEARCH_REQUESTS_TOTAL.labels(provider=f"ddgs_{backend}", status="error").inc()
 
     # Fallback to SearX if DDGS yields nothing
     if not search_results:
         search_results = _searx_search(query, max_results=5)
-        print(f"[Web Research] SearX fallback returned {len(search_results)} results for '{query}'")
+        logger.info(
+            "web_search_searx",
+            result_count=len(search_results),
+            query=query,
+        )
+        SEARCH_REQUESTS_TOTAL.labels(
+            provider="searx",
+            status="success" if search_results else "error",
+        ).inc()
 
     # Format search results for the LLM
     formatted_search = format_search_results(search_results, state["id"])
@@ -433,8 +475,17 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
         result = llm.invoke(formatted_prompt)
         synthesized_text = _extract_text(result.content)
     except Exception as e:
-        print(f"[web_research] LLM failed for query '{query}': {e}")
+        logger.error("web_research_llm_failed", query=query, error=str(e))
         synthesized_text = f"Error synthesizing search results for '{query}'."
+
+    # Cost tracking
+    if configurable.cost_tracking_enabled:
+        record_llm_usage(
+            model=configurable.query_generator_model,
+            stage="web_research",
+            prompt_text=formatted_prompt,
+            completion_text=synthesized_text,
+        )
 
     # Build simplified sources from search results
     sources_gathered = []
@@ -455,31 +506,16 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
 
 
 def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
-    """LangGraph node that identifies knowledge gaps and generates potential follow-up queries.
-
-    Analyzes the current summary and knowledge base documents to identify areas
-    for further research and generates potential follow-up queries.
-
-    Args:
-        state: Current graph state containing the running summary and research topic
-        config: Configuration for the runnable, including LLM provider settings
-
-    Returns:
-        Dictionary with state update, including search_query key containing the generated follow-up query
-    """
+    """Identify knowledge gaps and generate potential follow-up queries."""
     configurable = Configuration.from_runnable_config(config)
-    # Increment the research loop count and get the reasoning model
     state["research_loop_count"] = state.get("research_loop_count", 0) + 1
     reasoning_model = state.get("reasoning_model", configurable.reflection_model)
 
-    # Format the prompt (truncate summaries to avoid overly long prompts)
     current_date = get_current_date()
     research_topic = get_research_topic(state["messages"])
     summaries = "\n\n---\n\n".join(str(item) for item in state["web_research_result"])
-    # Truncate to ~4000 chars to keep prompt size reasonable for Ark
     summaries = summaries[:4000]
 
-    # Choose prompt based on whether we have RAG documents
     rag_docs = state.get("rag_documents", [])
     if rag_docs:
         formatted_prompt = rag_reflection_instructions.format(
@@ -495,7 +531,6 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
             summaries=summaries,
         )
 
-    # init Reasoning Model — use native tool-calling when enabled
     llm = _get_llm(reasoning_model, temperature=0)
     structured_llm = _create_structured_llm(
         llm, Reflection, use_tool_calling=configurable.tool_calling_enabled
@@ -503,12 +538,20 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     try:
         result = structured_llm.invoke(formatted_prompt)
     except Exception as e:
-        print(f"[reflection] Structured generation failed: {e}")
-        # Fallback: declare sufficient and stop the loop
+        logger.error("reflection_failed", error=str(e))
         result = Reflection(
             is_sufficient=True,
             knowledge_gap="",
             follow_up_queries=[],
+        )
+
+    # Cost tracking
+    if configurable.cost_tracking_enabled:
+        record_llm_usage(
+            model=reasoning_model,
+            stage="reflection",
+            prompt_text=formatted_prompt,
+            completion_text=str(result.dict()),
         )
 
     return {
@@ -524,24 +567,16 @@ def evaluate_research(
     state: ReflectionState,
     config: RunnableConfig,
 ) -> OverallState:
-    """LangGraph routing function that determines the next step in the research flow.
-
-    Controls the research loop by deciding whether to continue gathering information
-    or to finalize the summary based on the configured maximum number of research loops.
-
-    Args:
-        state: Current graph state containing the research loop count
-        config: Configuration for the runnable, including max_research_loops setting
-
-    Returns:
-        String literal indicating the next node to visit ("web_research" or "finalize_summary")
-    """
+    """Routing function that determines the next step in the research flow."""
     configurable = Configuration.from_runnable_config(config)
     max_research_loops = (
         state.get("max_research_loops")
         if state.get("max_research_loops") is not None
         else configurable.max_research_loops
     )
+
+    RESEARCH_LOOP_COUNT.observe(state["research_loop_count"])
+
     if state["is_sufficient"] or state["research_loop_count"] >= max_research_loops:
         return "finalize_answer"
     else:
@@ -562,31 +597,17 @@ def evaluate_research(
 # ---------------------------------------------------------------------------
 
 def agent_with_tools(state: OverallState, config: RunnableConfig) -> OverallState:
-    """Optional LangGraph node that lets the LLM call tools (MCP or bound tools).
-
-    This node is **not wired into the default graph** — it is provided as a
-    reserved capability. If you wish to build a ReAct-style loop, wire this
-    node (and ``execute_tool_calls``) into the graph instead of the research
-    pipeline.
-
-    Args:
-        state: Current graph state containing messages
-        config: Configuration for the runnable
-
-    Returns:
-        Dictionary with state update, including messages with potential tool calls
-    """
+    """Optional LangGraph node that lets the LLM call tools (MCP or bound tools)."""
     configurable = Configuration.from_runnable_config(config)
     llm = _get_llm(configurable.answer_model, temperature=0)
 
-    # Gather available tools: MCP tools (if enabled) + any statically bound tools
     tools = []
     mcp_client = _get_or_create_mcp_client(configurable)
     if mcp_client:
         try:
             tools.extend(mcp_client.to_langchain_tools())
         except Exception as e:
-            print(f"[agent_with_tools] Failed to load MCP tools: {e}")
+            logger.warning("mcp_tools_load_failed", error=str(e))
 
     if tools and _is_tool_calling_supported(llm):
         llm_with_tools = llm.bind_tools(tools)
@@ -599,19 +620,7 @@ def agent_with_tools(state: OverallState, config: RunnableConfig) -> OverallStat
 
 
 def execute_tool_calls(state: OverallState, config: RunnableConfig) -> OverallState:
-    """Execute any tool calls present in the last AIMessage.
-
-    This is the companion node to :func:`agent_with_tools`. It inspects the
-    last message for ``tool_calls``, executes them, and returns
-    :class:`~langchain_core.messages.ToolMessage` instances.
-
-    Args:
-        state: Current graph state
-        config: Configuration for the runnable
-
-    Returns:
-        Dictionary with state update containing ToolMessages
-    """
+    """Execute any tool calls present in the last AIMessage."""
     configurable = Configuration.from_runnable_config(config)
     messages = state["messages"]
     if not messages:
@@ -632,15 +641,14 @@ def execute_tool_calls(state: OverallState, config: RunnableConfig) -> OverallSt
         output = None
         error = None
 
-        # Try MCP first (if available)
         if mcp_client:
             try:
                 import asyncio
+
                 output = asyncio.run(mcp_client.call_tool(tool_name, tool_args))
             except Exception as e:
                 error = f"MCP tool call failed: {e}"
 
-        # If no MCP result, leave it to the caller to handle via bound tools
         if output is None and error is None:
             error = f"Tool '{tool_name}' is not available via MCP and no local handler is registered."
 
@@ -656,28 +664,17 @@ def execute_tool_calls(state: OverallState, config: RunnableConfig) -> OverallSt
 
 
 # ---------------------------------------------------------------------------
-# Finalize answer (existing node, unchanged logic)
+# Finalize answer
 # ---------------------------------------------------------------------------
 
 def finalize_answer(state: OverallState, config: RunnableConfig):
-    """LangGraph node that finalizes the research summary.
+    """Synthesize all gathered information into a coherent, cited answer.
 
-    Prepares the final output by deduplicating and formatting sources, then
-    combining web research and knowledge base documents to create a well-structured
-    research report with proper citations.
-
-    Also persists the session state and extracts long-term memory when enabled.
-
-    Args:
-        state: Current graph state containing the running summary and sources gathered
-
-    Returns:
-        Dictionary with state update, including running_summary key containing the formatted final summary with sources
+    Also persists session metadata, long-term memory, and audit logs.
     """
     configurable = Configuration.from_runnable_config(config)
     reasoning_model = state.get("reasoning_model") or configurable.answer_model
 
-    # Format the prompt
     current_date = get_current_date()
     rag_docs = state.get("rag_documents", [])
     formatted_prompt = answer_instructions.format(
@@ -687,22 +684,32 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         rag_documents=format_rag_documents(rag_docs),
     )
 
-    # init Reasoning Model, default to Claude 3.5 Sonnet
     llm = _get_llm(reasoning_model, temperature=0)
     try:
         result = llm.invoke(formatted_prompt)
         answer_text = _extract_text(result.content)
     except Exception as e:
-        print(f"[finalize_answer] LLM failed: {e}")
+        logger.error("finalize_answer_llm_failed", error=str(e))
         answer_text = "I encountered an error while generating the final answer. Please try again."
 
-    # Replace the short urls with the original urls and add all used urls to the sources_gathered
+    # Cost tracking for final answer
+    total_tokens = 0
+    total_cost = 0.0
+    if configurable.cost_tracking_enabled:
+        pt, ct, cost = record_llm_usage(
+            model=reasoning_model,
+            stage="finalize_answer",
+            prompt_text=formatted_prompt,
+            completion_text=answer_text,
+        )
+        total_tokens = pt + ct
+        total_cost = cost
+
+    # Replace short urls with original urls
     unique_sources = []
     for source in state["sources_gathered"]:
         if source["short_url"] in answer_text:
-            answer_text = answer_text.replace(
-                source["short_url"], source["value"]
-            )
+            answer_text = answer_text.replace(source["short_url"], source["value"])
             unique_sources.append(source)
 
     # Build structured RAG sources for frontend display
@@ -719,18 +726,16 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         })
 
     # -----------------------------------------------------------------------
-    # Persist session metadata + long-term memory
+    # Persist session metadata + long-term memory + audit
     # -----------------------------------------------------------------------
     try:
         thread_id = config.get("configurable", {}).get("thread_id") if config else None
         research_topic = get_research_topic(state["messages"])
 
         if thread_id:
-            # Update thread title from the first human message
             title = research_topic[:60] + "..." if len(research_topic) > 60 else research_topic
             persistence.upsert_thread(thread_id, title)
 
-            # Persist a lightweight snapshot of the final state
             persistence.save_session_state(
                 thread_id,
                 {
@@ -742,7 +747,7 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
                 },
             )
 
-        # Store cross-session memory (research topics the user cares about)
+        # Cross-session memory
         if configurable.memory_enabled and research_topic:
             persistence.put_memory(
                 "research_topics",
@@ -755,21 +760,30 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
                 },
             )
 
-            # Trigger automatic memory compression if threshold reached
+            # Automatic memory compression
             try:
                 from agent.memory_compression import maybe_compress_memory
 
-                llm = _get_llm(configurable.answer_model, temperature=0)
+                llm_compress = _get_llm(configurable.answer_model, temperature=0)
                 maybe_compress_memory(
                     "research_topics",
-                    llm=llm,
+                    llm=llm_compress,
                     threshold=configurable.memory_compression_threshold,
                     batch_size=configurable.memory_compression_batch_size,
                 )
             except Exception as compress_err:
-                print(f"[finalize_answer] Memory compression failed (non-critical): {compress_err}")
+                logger.warning("memory_compression_failed", error=str(compress_err))
+
+        # Update audit log with response metadata
+        if thread_id:
+            persistence.update_audit_log_response(
+                thread_id=thread_id,
+                response_summary=answer_text[:200],
+                tokens_used=total_tokens or None,
+                cost_usd=total_cost or None,
+            )
     except Exception as e:
-        print(f"[finalize_answer] Persistence failed (non-critical): {e}")
+        logger.warning("finalize_persistence_failed", error=str(e))
 
     return {
         "messages": [AIMessage(content=answer_text)],
@@ -778,45 +792,33 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
     }
 
 
-# Create our Agent Graph
+# ---------------------------------------------------------------------------
+# Graph wiring
+# ---------------------------------------------------------------------------
+
 builder = StateGraph(OverallState, config_schema=Configuration)
 
-# Define the nodes we will cycle between
 builder.add_node("generate_query", generate_query)
 builder.add_node("web_research", web_research)
 builder.add_node("rag_retrieve", rag_retrieve)
 builder.add_node("reflection", reflection)
 builder.add_node("finalize_answer", finalize_answer)
 
-# ---------------------------------------------------------------------------
 # Reserved-capability nodes (not wired by default)
-# ---------------------------------------------------------------------------
-# ``agent_with_tools`` and ``execute_tool_calls`` provide a ReAct-style
-# tool-calling loop. They are registered so they can be wired in later
-# (e.g. via a sub-graph or a conditional entry-point) without changing
-# the default research pipeline.
-# ---------------------------------------------------------------------------
 builder.add_node("agent_with_tools", agent_with_tools)
 builder.add_node("execute_tool_calls", execute_tool_calls)
 
-# Set the entrypoint as `generate_query`
-# This means that this node is the first one called
 builder.add_edge(START, "generate_query")
-# Add conditional edge to spawn parallel web research and RAG retrieval
 builder.add_conditional_edges(
     "generate_query", continue_to_research, ["web_research", "rag_retrieve"]
 )
-# Both web_research and rag_retrieve feed into reflection
 builder.add_edge("web_research", "reflection")
 builder.add_edge("rag_retrieve", "reflection")
-# Evaluate the research
 builder.add_conditional_edges(
     "reflection", evaluate_research, ["web_research", "finalize_answer"]
 )
-# Finalize the answer
 builder.add_edge("finalize_answer", END)
 
-# Compile without custom checkpointer — langgraph-api handles persistence
 graph = builder.compile(
     name="pro-search-agent",
 )

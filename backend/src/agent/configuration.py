@@ -56,7 +56,14 @@ class Configuration(BaseModel):
 
     chroma_persist_dir: str = Field(
         default="data/chroma",
-        metadata={"description": "Directory to persist the Chroma vector store."},
+        metadata={
+            "description": (
+                "Directory to persist the Chroma vector store. "
+                "This setting is only relevant when using Chroma (the default). "
+                "If you migrate to Qdrant, Milvus, Pinecone, Weaviate, etc., "
+                "replace this with the appropriate connection URI or host/port config."
+            )
+        },
     )
 
     # -----------------------------------------------------------------------
@@ -142,6 +149,76 @@ class Configuration(BaseModel):
     rerank_top_k: int = Field(
         default=5,
         metadata={"description": "Final top-k documents to return after reranking."},
+    )
+
+    # -----------------------------------------------------------------------
+    # Security & compliance
+    # -----------------------------------------------------------------------
+    input_max_length: int = Field(
+        default=4000,
+        metadata={"description": "Maximum input length before truncation."},
+    )
+
+    pii_detection_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to detect and mask PII in user input."},
+    )
+
+    # -----------------------------------------------------------------------
+    # Rate limiting
+    # -----------------------------------------------------------------------
+    rate_limit_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to enable per-client rate limiting."},
+    )
+
+    rate_limit_requests_per_minute: int = Field(
+        default=60,
+        metadata={"description": "Maximum requests per minute per client."},
+    )
+
+    # -----------------------------------------------------------------------
+    # Cost tracking & budgets
+    # -----------------------------------------------------------------------
+    cost_tracking_enabled: bool = Field(
+        default=True,
+        metadata={"description": "Whether to estimate and record LLM token usage and cost."},
+    )
+
+    daily_token_budget: int = Field(
+        default=0,
+        metadata={"description": "Daily token budget per user (0 = unlimited)."},
+    )
+
+    # -----------------------------------------------------------------------
+    # Resilience
+    # -----------------------------------------------------------------------
+    llm_timeout_seconds: int = Field(
+        default=60,
+        metadata={"description": "Timeout for individual LLM API calls."},
+    )
+
+    llm_max_retries: int = Field(
+        default=3,
+        metadata={"description": "Maximum retry attempts for LLM API calls."},
+    )
+
+    db_fallback_enabled: bool = Field(
+        default=False,
+        metadata={"description": "Whether to fall back to in-memory storage when PostgreSQL is unavailable."},
+    )
+
+    # -----------------------------------------------------------------------
+    # Observability
+    # -----------------------------------------------------------------------
+    log_level: str = Field(
+        default="INFO",
+        metadata={"description": "Logging level (DEBUG, INFO, WARNING, ERROR)."},
+    )
+
+    log_format: str = Field(
+        default="json",
+        metadata={"description": "Log output format: json or console."},
     )
 
     @classmethod

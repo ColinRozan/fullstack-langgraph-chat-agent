@@ -12,7 +12,9 @@ from typing import Any, Dict
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from agent import persistence
+from agent.observability import get_logger
 
+logger = get_logger(__name__)
 
 _COMPRESSION_PROMPT_TEMPLATE = """\
 You are a memory compression assistant. Your task is to compress a set of memory entries into a concise summary that preserves all key facts, decisions, and context.
@@ -67,7 +69,7 @@ def maybe_compress_memory(
     try:
         count = persistence.count_memory(namespace)
     except Exception as e:
-        print(f"[memory_compression] Failed to count memory for '{namespace}': {e}")
+        logger.warning("memory_count_failed", namespace=namespace, error=str(e))
         return False
 
     if count < threshold:
@@ -79,7 +81,7 @@ def maybe_compress_memory(
             namespace, limit=batch_size, order_by="created_at ASC"
         )
     except Exception as e:
-        print(f"[memory_compression] Failed to list memory for '{namespace}': {e}")
+        logger.warning("memory_list_failed", namespace=namespace, error=str(e))
         return False
 
     if not memories:
@@ -98,7 +100,7 @@ def maybe_compress_memory(
         raw_text = response.content if hasattr(response, "content") else str(response)
         parsed = _extract_json(raw_text)
     except Exception as e:
-        print(f"[memory_compression] LLM compression failed for '{namespace}': {e}")
+        logger.warning("memory_compression_llm_failed", namespace=namespace, error=str(e))
         return False
 
     summary = parsed.get("summary", "")
@@ -119,12 +121,14 @@ def maybe_compress_memory(
     try:
         persistence.put_memory(namespace, compressed_key, compressed_value)
         deleted = persistence.delete_memory_batch(namespace, list(memories.keys()))
-        print(
-            f"[memory_compression] Compressed {deleted} entries in '{namespace}' "
-            f"into key '{compressed_key}'"
+        logger.info(
+            "memory_compressed",
+            namespace=namespace,
+            deleted=deleted,
+            compressed_key=compressed_key,
         )
     except Exception as e:
-        print(f"[memory_compression] Failed to persist compression for '{namespace}': {e}")
+        logger.warning("memory_compression_persist_failed", namespace=namespace, error=str(e))
         return False
 
     return True

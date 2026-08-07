@@ -1,3 +1,38 @@
+# =============================================================================
+# Infrastructure stack (single-node)
+# =============================================================================
+# NOTE: The vector database here is *implicit*—Chroma runs embedded inside the
+# langgraph-api container and persists to a local file (data/chroma/).
+# For production scaling, add a dedicated vector-database service:
+#
+#   Option A – Chroma Server (minimal change)
+#     chroma-server:
+#       image: chromadb/chroma:latest
+#       volumes:
+#         - chroma-data:/chroma/chroma
+#       ports:
+#         - "8001:8000"
+#
+#   Option B – Qdrant (recommended for mid-scale)
+#     qdrant:
+#       image: qdrant/qdrant:latest
+#       volumes:
+#         - qdrant-data:/qdrant/storage
+#       ports:
+#         - "6333:6333"
+#
+#   Option C – Milvus (enterprise / SaaS scale)
+#     milvus-standalone:
+#       image: milvusdb/milvus:latest
+#       volumes:
+#         - milvus-data:/var/lib/milvus
+#       ports:
+#         - "19530:19530"
+#
+# After adding the service, update backend/src/agent/knowledge_base.py to
+# connect to the network endpoint instead of the local file path.
+# =============================================================================
+
 volumes:
   langgraph-data:
     driver: local

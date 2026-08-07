@@ -11,9 +11,21 @@ export interface ThreadListResponse {
   threads: ThreadMeta[];
 }
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem("api_token");
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  const apiKey = localStorage.getItem("api_key");
+  if (apiKey) {
+    return { "X-API-Key": apiKey };
+  }
+  return {};
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     ...init,
   });
   if (!resp.ok) {

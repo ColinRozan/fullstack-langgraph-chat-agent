@@ -104,6 +104,14 @@ function ChatSession({
       : "http://localhost:8123",
     assistantId: "agent",
     threadId,
+    headers: {
+      ...(localStorage.getItem("api_token")
+        ? { Authorization: `Bearer ${localStorage.getItem("api_token")}` }
+        : {}),
+      ...(localStorage.getItem("api_key")
+        ? { "X-API-Key": localStorage.getItem("api_key")! }
+        : {}),
+    },
     onThreadId: (id) => {
       setResolvedThreadId(id);
       if (!threadCreatedRef.current && id) {

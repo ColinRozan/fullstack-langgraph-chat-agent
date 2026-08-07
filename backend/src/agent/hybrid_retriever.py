@@ -5,6 +5,19 @@ Retrieval pipeline:
     2. BM25 keyword search      → top candidates
     3. RRF fusion               → merged candidate list
     4. Cross-encoder rerank     → final ranked list
+
+.. note::
+    The vector-search backend is **pluggable**.  Chroma is used here because
+    it requires no extra infrastructure for single-node deployments.
+    To scale out, replace ``get_vectorstore()`` (which returns a
+    ``langchain_chroma.Chroma`` instance) with any other LangChain-compatible
+    vector store—e.g. ``langchain_qdrant.Qdrant``,
+    ``langchain_milvus.Milvus``, ``langchain_pinecone.Pinecone``,
+    or ``langchain_weaviate.Weaviate``.
+
+    The BM25 index (memory-mapped via ``rank_bm25``) and the RRF fusion
+    logic are orthogonal to the vector backend and can be kept unchanged
+    during migration.
 """
 
 import json
@@ -18,6 +31,9 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from agent.knowledge_base import get_vectorstore
+from agent.observability import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # BM25
@@ -50,20 +66,21 @@ def _init_reranker() -> Optional[Any]:
         model_name = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-base")
         _RERANKER = TextCrossEncoder(model_name=model_name)
         _RERANKER_TYPE = "fastembed"
-        print(f"[HybridRetriever] Loaded fastembed reranker: {model_name}")
+        logger.info("reranker_loaded", type="fastembed", model=model_name)
         return _RERANKER
     except Exception as e:
-        print(f"[HybridRetriever] fastembed reranker not available: {e}")
+        logger.warning("reranker_fastembed_unavailable", error=str(e))
 
     # If fastembed unavailable, mark for LLM fallback later
     _RERANKER_TYPE = "llm_fallback"
-    print("[HybridRetriever] Will use LLM fallback for reranking")
+    logger.info("reranker_fallback", type="llm")
     return None
 
 
 # ---------------------------------------------------------------------------
 # Tokenization (lightweight, no extra deps)
 # ---------------------------------------------------------------------------
+
 
 def _tokenize(text: str) -> List[str]:
     """Tokenize text for BM25.
@@ -155,7 +172,7 @@ class HybridRetriever:
     def _build_bm25_index(self) -> None:
         """Build or load a BM25 index backed by the current Chroma collection."""
         if not self.enable_bm25:
-            print("[HybridRetriever] BM25 disabled")
+            logger.debug("bm25_disabled")
             return
 
         # Determine cache path based on chroma persist dir
@@ -174,7 +191,7 @@ class HybridRetriever:
             collection = self.vectorstore._collection
             chroma_count = collection.count()
         except Exception as e:
-            print(f"[HybridRetriever] Failed to get Chroma count: {e}")
+            logger.warning("bm25_chroma_count_failed", error=str(e))
             chroma_count = -1
 
         # Try loading cached index if document counts match
@@ -187,10 +204,10 @@ class HybridRetriever:
                         data = pickle.load(f)
                     self.bm25_index = data["bm25"]
                     self.doc_list = data["docs"]
-                    print(f"[HybridRetriever] Loaded cached BM25 index ({len(self.doc_list)} docs)")
+                    logger.info("bm25_cache_loaded", document_count=len(self.doc_list))
                     return
             except Exception as e:
-                print(f"[HybridRetriever] Failed to load cached BM25: {e}. Rebuilding...")
+                logger.warning("bm25_cache_load_failed", error=str(e))
 
         # Fetch all documents from Chroma
         try:
@@ -199,11 +216,11 @@ class HybridRetriever:
             documents = result.get("documents", [])
             metadatas = result.get("metadatas", [])
         except Exception as e:
-            print(f"[HybridRetriever] Failed to fetch docs from Chroma: {e}")
+            logger.warning("bm25_fetch_docs_failed", error=str(e))
             return
 
         if not documents:
-            print("[HybridRetriever] No documents in Chroma; BM25 index empty")
+            logger.info("bm25_no_documents")
             return
 
         self.doc_list = []
@@ -219,9 +236,9 @@ class HybridRetriever:
                 pickle.dump({"bm25": self.bm25_index, "docs": self.doc_list}, f)
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump({"chroma_count": chroma_count}, f)
-            print(f"[HybridRetriever] Built and cached BM25 index ({len(self.doc_list)} docs)")
+            logger.info("bm25_index_built", document_count=len(self.doc_list))
         except Exception as e:
-            print(f"[HybridRetriever] Failed to cache BM25 index: {e}")
+            logger.warning("bm25_cache_write_failed", error=str(e))
 
     # ------------------------------------------------------------------
     # Retrieval
@@ -251,7 +268,7 @@ class HybridRetriever:
         try:
             return self.vectorstore.similarity_search(query, k=self.top_k * 2)
         except Exception as e:
-            print(f"[HybridRetriever] Vector search failed: {e}")
+            logger.warning("vector_search_failed", error=str(e))
             return []
 
     def _bm25_search(self, query: str) -> List[Document]:
@@ -267,7 +284,7 @@ class HybridRetriever:
             )[: self.top_k * 2]
             return [self.doc_list[i] for i in top_indices]
         except Exception as e:
-            print(f"[HybridRetriever] BM25 search failed: {e}")
+            logger.warning("bm25_search_failed", error=str(e))
             return []
 
     def _rrf_fuse(
@@ -303,7 +320,7 @@ class HybridRetriever:
             try:
                 return self._fastembed_rerank(query, docs)
             except Exception as e:
-                print(f"[HybridRetriever] Fastembed rerank failed: {e}")
+                logger.warning("fastembed_rerank_failed", error=str(e))
 
         # LLM fallback path
         if self.llm is not None:
@@ -311,7 +328,7 @@ class HybridRetriever:
                 scored = _llm_rerank(query, docs, self.llm)
                 return [doc for doc, _ in scored]
             except Exception as e:
-                print(f"[HybridRetriever] LLM rerank failed: {e}")
+                logger.warning("llm_rerank_failed", error=str(e))
 
         # If everything fails, return as-is
         return docs

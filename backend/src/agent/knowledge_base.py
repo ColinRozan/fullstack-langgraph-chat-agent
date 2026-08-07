@@ -1,4 +1,34 @@
-"""Knowledge base module for RAG retrieval using Chroma vector store."""
+"""Knowledge base module for RAG retrieval using Chroma vector store.
+
+.. note::
+    **Enterprise Vector DB Migration Path**
+
+    Chroma (embedded / file-based) is retained for simplicity in single-node
+    deployments.  When you need horizontal scaling, high availability, or
+    multi-tenant isolation, migrate to one of the following alternatives:
+
+    * **Qdrant** (recommended for mid-scale) – Rust-based, supports hybrid
+      search (vector + payload filtering), distributed mode, and has a
+      first-class LangChain integration (``langchain-qdrant``).
+      Migration effort: low – swap ``Chroma`` → ``Qdrant`` in
+      ``get_vectorstore()``.
+
+    * **Milvus / Zilliz Cloud** (recommended for enterprise / SaaS) –
+      GPU-accelerated indexing, RBAC, multi-tenancy, billion-scale vectors.
+      Migration effort: medium – requires collection design + embedding
+      dimension alignment.
+
+    * **Pinecone** (managed, serverless) – Zero-ops, metadata filtering,
+      automatic scaling.  Migration effort: low – fully managed but vendor
+      lock-in.
+
+    * **Weaviate** – GraphQL interface, modular AI integrations, hybrid
+      search out of the box.
+
+    Whichever target you choose, the BM25 + RRF + cross-encoder rerank
+    pipeline in ``hybrid_retriever.py`` can be preserved; only the
+    ``vectorstore`` source needs to change.
+"""
 
 from pathlib import Path
 from typing import List
@@ -9,6 +39,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
+from agent.observability import get_logger
+from agent import persistence
+
+logger = get_logger(__name__)
 
 # Default paths relative to backend/
 DEFAULT_DOCS_DIR = Path(__file__).parent.parent.parent / "data" / "docs"
@@ -26,9 +60,9 @@ class FastEmbedEmbeddings(Embeddings):
         from fastembed import TextEmbedding
         try:
             self._model = TextEmbedding(model_name="BAAI/bge-small-zh-v1.5")
-            print("[Knowledge Base] Using BAAI/bge-small-zh-v1.5 for embeddings")
+            logger.info("embedding_model_loaded", model="BAAI/bge-small-zh-v1.5")
         except Exception as e:
-            print(f"[Knowledge Base] Failed to load bge-small-zh-v1.5: {e}, falling back to all-MiniLM-L6-v2")
+            logger.warning("embedding_model_fallback", error=str(e))
             from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
             self._model = None
             self._fallback = DefaultEmbeddingFunction()
@@ -51,7 +85,7 @@ def _load_documents(docs_dir: Path) -> List[Document]:
     """Load all supported documents from the docs directory."""
     documents: List[Document] = []
     if not docs_dir.exists():
-        print(f"[Knowledge Base] Docs directory not found: {docs_dir}")
+        logger.warning("docs_dir_not_found", path=str(docs_dir))
         return documents
 
     for file_path in docs_dir.rglob("*"):
@@ -74,9 +108,9 @@ def _load_documents(docs_dir: Path) -> List[Document]:
             for doc in docs:
                 doc.metadata["source"] = str(file_path.relative_to(docs_dir))
             documents.extend(docs)
-            print(f"[Knowledge Base] Loaded {len(docs)} pages from {file_path.name}")
+            logger.info("document_loaded", file=file_path.name, pages=len(docs))
         except Exception as e:
-            print(f"[Knowledge Base] Failed to load {file_path}: {e}")
+            logger.warning("document_load_failed", file=str(file_path), error=str(e))
 
     return documents
 
@@ -87,10 +121,10 @@ def _build_vectorstore(
     embeddings: Embeddings,
 ) -> Chroma:
     """Build a new Chroma vector store from documents."""
-    print("[Knowledge Base] Building vector store from documents...")
+    logger.info("building_vectorstore")
     raw_docs = _load_documents(docs_dir)
     if not raw_docs:
-        print("[Knowledge Base] No documents found. Vector store will be empty.")
+        logger.warning("no_documents_found")
         # Create empty store so retrieval doesn't crash
         return Chroma.from_documents(
             documents=[Document(page_content="", metadata={"source": "placeholder"})],
@@ -105,7 +139,7 @@ def _build_vectorstore(
         add_start_index=True,
     )
     splits = text_splitter.split_documents(raw_docs)
-    print(f"[Knowledge Base] Split into {len(splits)} chunks")
+    logger.info("documents_split", chunk_count=len(splits))
 
     vectorstore = Chroma.from_documents(
         documents=splits,
@@ -113,7 +147,20 @@ def _build_vectorstore(
         persist_directory=str(chroma_dir),
         collection_name="knowledge_base",
     )
-    print(f"[Knowledge Base] Vector store built at {chroma_dir}")
+    logger.info("vectorstore_built", path=str(chroma_dir))
+
+    # Track document index metadata
+    try:
+        for doc in raw_docs:
+            source = doc.metadata.get("source", "unknown")
+            persistence.upsert_document_index(
+                filename=source,
+                chunk_count=len(splits),
+                total_chars=sum(len(d.page_content) for d in splits),
+            )
+    except Exception as exc:
+        logger.warning("document_index_tracking_failed", error=str(exc))
+
     return vectorstore
 
 
@@ -138,10 +185,10 @@ def get_vectorstore(
                 collection_name="knowledge_base",
             )
             count = vectorstore._collection.count()
-            print(f"[Knowledge Base] Loaded existing vector store with {count} documents")
+            logger.info("vectorstore_loaded", document_count=count)
             return vectorstore
         except Exception as e:
-            print(f"[Knowledge Base] Failed to load existing store: {e}. Rebuilding...")
+            logger.warning("vectorstore_load_failed", error=str(e))
 
     return _build_vectorstore(docs_dir, chroma_dir, embeddings)
 
@@ -182,5 +229,5 @@ def retrieve_documents(
     try:
         return vectorstore.similarity_search(query, k=top_k)
     except Exception as e:
-        print(f"[Knowledge Base] Retrieval failed: {e}")
+        logger.warning("retrieval_failed", error=str(e))
         return []

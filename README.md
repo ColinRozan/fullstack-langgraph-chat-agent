@@ -27,6 +27,16 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 - 🔧 **Native Tool-Calling** (reserved) — Optional native LLM structured-output / tool-calling for query generation and reflection (falls back to manual JSON parsing when disabled).
 - 🔌 **MCP Support** (reserved) — Pluggable Model Context Protocol server integration for external tool discovery and invocation.
 - 💾 **PDF Export** — Export AI answers as print-ready PDFs with light-theme rendering.
+- 🔐 **Authentication** — Optional Bearer Token or API Key authentication (disabled when no credentials are configured).
+- 📝 **Audit Logging** — Every API request is recorded with user, IP, action, and token cost for compliance.
+- ⏱️ **Rate Limiting** — Redis-backed sliding-window rate limiter per client (configurable RPM).
+- 🔒 **Input Security** — Automatic sanitization, PII detection & masking (China-centric + general), and prompt-injection heuristics.
+- 💰 **Cost Tracking** — Per-request token estimation and USD cost calculation with Prometheus metrics.
+- 🔄 **Resilience** — Exponential back-off retries and circuit breaker for LLM and external service calls.
+- 📊 **Observability** — Structured JSON logging (structlog), Prometheus metrics, and distributed trace IDs.
+- 🏥 **Health Checks** — Liveness (`/health`, `/live`) and readiness (`/ready`) probes for Kubernetes.
+- 👤 **User Isolation** — Thread metadata and session state support optional `user_id` isolation.
+- ⭐ **Feedback API** — Collect thumbs-up/down ratings on individual messages for quality analysis.
 - 🐳 **Docker Ready** — Multi-stage Dockerfile and `docker-compose.yml` for production deployment with Redis and PostgreSQL.
 
 ## Project Structure
@@ -61,7 +71,16 @@ A fullstack research assistant powered by **LangGraph**, **LLM APIs**, and a mod
 │   │   ├── memory_compression.py # Automatic memory compression when thresholds are exceeded
 │   │   ├── tools_and_schemas.py # Pydantic schemas for structured LLM outputs & tool/MCP schemas
 │   │   ├── mcp_client.py        # MCP (Model Context Protocol) client — reserved capability
-│   │   ├── persistence.py       # PostgreSQL persistence layer (thread metadata, memory, checkpointer)
+│   │   ├── persistence.py       # PostgreSQL persistence layer (thread metadata, memory, checkpointer, audit, feedback)
+│   │   ├── observability.py     # Structured logging, Prometheus metrics, trace IDs
+│   │   ├── security.py          # Input sanitization, PII detection, prompt-injection screening
+│   │   ├── cost_tracking.py     # Token estimation and USD cost calculation
+│   │   ├── retry_config.py      # Exponential back-off retries and circuit breaker
+│   │   ├── health.py            # Health / liveness / readiness probe endpoints
+│   │   ├── middleware/
+│   │   │   ├── auth.py          # Bearer / API Key authentication middleware
+│   │   │   ├── audit.py         # Audit-log middleware
+│   │   │   └── rate_limit.py    # Redis-backed sliding-window rate limiter
 │   │   ├── utils.py             # Helper utilities
 │   │   └── app.py               # FastAPI entry point (serves frontend at /app)
 │   ├── examples/
@@ -171,7 +190,8 @@ cd frontend && npm run dev
 | `ActivityTimeline.tsx` | Collapsible real-time timeline showing research steps with contextual icons. |
 
 **Key frontend features:**
-- **Multi-thread sidebar** — Each conversation is an independent thread persisted in `localStorage`. Switch freely without losing context.
+- **Multi-thread sidebar** — Each conversation is an independent thread persisted server-side. Switch freely without losing context.
+- **Authentication** — Reads `api_token` / `api_key` from `localStorage` and sends them on every API request (Bearer or `X-API-Key`).
 - Real-time streaming via `@langchain/langgraph-sdk/react` `useStream` hook
 - Automatic scroll-to-bottom on new messages
 - Source panels per message: **知识库来源** (knowledge base) and **网络来源** (web sources)
@@ -193,6 +213,53 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 | `agent_with_tools` *(reserved)* | ReAct-style agent node that lets the LLM invoke MCP or bound tools (not wired by default). |
 | `execute_tool_calls` *(reserved)* | Executes tool calls produced by `agent_with_tools` and returns `ToolMessage` responses (not wired by default). |
 
+#### Production Middleware Stack
+
+FastAPI registers the following middleware **in order**:
+
+| Middleware | Purpose |
+|------------|---------|
+| `CorrelationIdMiddleware` | Injects / propagates `X-Request-ID` and binds it to structured log context. |
+| `PrometheusMiddleware` | Records request counts and latency histograms for all HTTP traffic. |
+| `AuthMiddleware` | Enforces Bearer Token (`Authorization: Bearer <token>`) or API Key (`X-API-Key: <key>`). Skipped when no credentials are configured. |
+| `AuditMiddleware` | Writes a lightweight audit row for every API request (user, IP, action, thread ID). |
+| `RateLimitMiddleware` | Redis-backed sliding-window rate limiter per client IP / user ID. |
+| `CORSMiddleware` | CORS handling with origin whitelist from `CORS_ORIGINS`. |
+
+#### Security
+
+User input is sanitized before reaching the LLM:
+
+- **Sanitization** — Strips control characters and truncates to `input_max_length` (default 4000).
+- **PII Detection** — Regex-based detection for Chinese mobile numbers, ID cards, emails, and bank cards. Detected values are masked (e.g. `[china_mobile_REDACTED]`).
+- **Prompt Injection Screening** — Lightweight keyword heuristic for common injection payloads (`ignore previous instructions`, `system prompt`, `jailbreak`, etc.).
+
+#### Observability
+
+- **Structured Logging** — `structlog` outputs JSON logs with trace IDs, log levels, and ISO timestamps. Set `LOG_FORMAT=console` for human-readable output during development.
+- **Prometheus Metrics** — Exposed at `/metrics`:
+  - `agent_requests_total` — HTTP request count by method, endpoint, status.
+  - `agent_request_duration_seconds` — Request latency histogram.
+  - `llm_tokens_total` — Token consumption by model, stage, and type (prompt / completion).
+  - `llm_cost_usd_total` — Estimated LLM cost by model and stage.
+  - `search_requests_total` — Web search count by provider and status.
+  - `rag_retrieval_duration_seconds` — RAG retrieval latency.
+  - `research_loop_count` — Number of reflection loops executed.
+  - `db_connections_active` — Active PostgreSQL connections.
+
+#### Resilience
+
+- **Exponential Back-Off Retry** — LLM and external service calls retry up to `llm_max_retries` with waits of 1s, 2s, 4s … (max 30s).
+- **Circuit Breaker** — After 10 consecutive failures, the breaker opens and rejects calls for 30s, then probes with a half-open state.
+
+#### Health & Metrics Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` / `GET /live` | Liveness probe — returns 200 as long as the process is up. |
+| `GET /ready` | Readiness probe — returns 200 only when PostgreSQL and Chroma are reachable. |
+| `GET /metrics` | Prometheus scrape endpoint with all application metrics. |
+
 ### Agent Workflow
 
 <img src="./agent.png" title="Agent Flow" alt="Agent Flow" width="100%">
@@ -209,10 +276,17 @@ The backend is a stateful LangGraph agent compiled into a research workflow:
 
 Thread metadata and long-term memory are now stored in **PostgreSQL** instead of browser `localStorage`:
 
-- **Thread Metadata** — stored in the `thread_metadata` table (`thread_id`, `title`, `created_at`, `updated_at`).
+- **Thread Metadata** — stored in the `thread_metadata` table (`thread_id`, `user_id`, `title`, `created_at`, `updated_at`).
 - **Session Snapshots** — a lightweight JSON snapshot of each thread's final state is saved to `session_state`.
 - **Long-Term Memory** — cross-session key-value pairs are stored in `agent_memory` (namespace → key → JSONB value).
+- **Audit Logging** — every API request is recorded in `audit_log` with user ID, IP, action, token usage, and cost.
+- **Feedback** — user ratings (`-1` or `1`) and comments per message are stored in `feedback` for quality analysis.
+- **Document Index** — RAG document indexing metadata (filename, chunk count, total chars, last indexed) is tracked in `document_index`.
 - **LangGraph Checkpointer** — the graph compiles with `PostgresSaver` when the DB is reachable, enabling full thread-state checkpointing. If the DB is unavailable, it gracefully falls back to `MemorySaver`.
+
+#### User Isolation
+
+When authentication is enabled, all thread metadata and session state APIs accept an optional `user_id`. The persistence layer filters queries by `user_id`, ensuring users can only see and manage their own threads. The `user_id` is extracted from the authenticated request state and propagated through all CRUD operations.
 
 The frontend fetches the thread list from `/api/threads` on mount and synchronizes create/update/delete operations via REST. The only remaining `localStorage` usage is `lg-active-thread`, which remembers the last selected thread ID across page reloads.
 
@@ -330,6 +404,10 @@ Agent behavior can be customized via environment variables or runtime config:
 | `OPENAI_API_KEY` | — | API key for OpenAI-compatible provider |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for OpenAI-compatible API |
 | `POSTGRES_URI` | `postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable` | PostgreSQL connection URI for thread metadata, memory, and LangGraph checkpointing |
+| `REDIS_URI` | `redis://localhost:6379` | Redis connection URI for rate limiting |
+| `API_TOKEN` | — | Bearer token for authentication (leave empty to disable auth) |
+| `API_KEY` | — | API key for `X-API-Key` header authentication |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:8123` | Comma-separated allowed CORS origins |
 | `query_generator_model` | `ark-code-latest` | Model for search query generation |
 | `reflection_model` | `ark-code-latest` | Model for reflection and gap analysis |
 | `answer_model` | `ark-code-latest` | Model for final answer synthesis |
@@ -350,6 +428,17 @@ Agent behavior can be customized via environment variables or runtime config:
 | `rerank_enabled` | `true` | Enable cross-encoder reranking after hybrid retrieval |
 | `hybrid_search_top_k` | `10` | Initial top-k candidates to retrieve from each search modality before fusion |
 | `rerank_top_k` | `5` | Final top-k documents to return after reranking |
+| `input_max_length` | `4000` | Maximum user input length before truncation |
+| `pii_detection_enabled` | `true` | Detect and mask PII in user input |
+| `rate_limit_enabled` | `true` | Enable per-client rate limiting |
+| `rate_limit_requests_per_minute` | `60` | Maximum requests per minute per client |
+| `cost_tracking_enabled` | `true` | Estimate and record LLM token usage and cost |
+| `daily_token_budget` | `0` | Daily token budget per user (`0` = unlimited) |
+| `llm_timeout_seconds` | `60` | Timeout for individual LLM API calls |
+| `llm_max_retries` | `3` | Maximum retry attempts for LLM API calls |
+| `db_fallback_enabled` | `false` | Fall back to in-memory storage when PostgreSQL is unavailable |
+| `log_level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `log_format` | `json` | Log output format: `json` or `console` |
 
 ### Research Effort Levels
 
@@ -375,7 +464,7 @@ python examples/cli_research.py "What are the latest trends in renewable energy?
 
 ### Docker Compose (Production)
 
-The included `docker-compose.yml` spins up Redis (pub/sub for streaming), PostgreSQL (state persistence), and the LangGraph API server.
+The included `docker-compose.yml` spins up Redis (pub/sub + rate limiting), PostgreSQL (state persistence), and the LangGraph API server.
 
 **1. Build the Docker image:**
 
@@ -395,6 +484,16 @@ GEMINI_API_KEY=<your_key> LANGSMITH_API_KEY=<your_key> docker-compose up
 
 - **App:** http://localhost:8123/app/
 - **API:** http://localhost:8123
+- **Health:** http://localhost:8123/health
+- **Metrics:** http://localhost:8123/metrics
+
+### Kubernetes / Production Notes
+
+- **Probes** — Configure `livenessProbe` on `/live` and `readinessProbe` on `/ready`.
+- **Authentication** — Set `API_TOKEN` or `API_KEY` to require credentials. When unset, auth is disabled for development convenience.
+- **Rate Limiting** — Requires a reachable Redis instance. Set `RATE_LIMIT_ENABLED=true` and `RATE_LIMIT_REQUESTS_PER_MINUTE=60`.
+- **CORS** — Tighten `CORS_ORIGINS` to your production domain(s).
+- **Observability** — Scrape `/metrics` with Prometheus. Set `LOG_FORMAT=json` for structured logging in production.
 
 ### Notes on Production URLs
 
@@ -422,10 +521,15 @@ GEMINI_API_KEY=<your_key> LANGSMITH_API_KEY=<your_key> docker-compose up
 - [DuckDuckGo Search](https://github.com/deedy5/duckduckgo_search) — Web search API with SearXNG fallback
 - [PyPDF](https://github.com/py-pdf/pypdf) — PDF document loading
 - [Pydantic](https://docs.pydantic.dev/) — Data validation and configuration
+- [structlog](https://www.structlog.org/) — Structured JSON logging
+- [Prometheus Client](https://github.com/prometheus/client_python) — Application metrics
+- [Tenacity](https://github.com/jd/tenacity) — Retry and circuit-breaker utilities
+- [Redis-py](https://github.com/redis/redis-py) — Redis client for rate limiting
+- [tiktoken](https://github.com/openai/tiktoken) — Fast token counting for OpenAI models
 
 ### Infrastructure
-- [Redis](https://redis.io/) — Pub/sub broker for real-time streaming
-- [PostgreSQL](https://www.postgresql.org/) — Persistence for threads, runs, and state
+- [Redis](https://redis.io/) — Pub/sub broker for real-time streaming and rate-limiting backend
+- [PostgreSQL](https://www.postgresql.org/) — Persistence for threads, runs, state, audit logs, and feedback
 
 ## License
 
